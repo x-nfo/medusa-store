@@ -245,8 +245,6 @@ export const completeOrderWithReservation = createWorkflow(
       })
     })
 
-
-
     releaseLockStep({
       key: input.cart_id,
     })
