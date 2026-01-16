@@ -8,6 +8,10 @@ const DEFAULT_PAGE_SIZE = 200
 export default async function releaseExpiredReservations(
   container: MedusaContainer
 ) {
+  if (process.env.NODE_ENV === "test") {
+    return
+  }
+
   const inventoryService = container.resolve(Modules.INVENTORY)
   const now = Date.now()
   let offset = 0

@@ -1,17 +1,48 @@
 import { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
+import { GmailNotificationService } from "../modules/notification-gmail"
 type ShipmentCreatedEvent = {
   id: string
   no_notification?: boolean
 }
+
+const getCustomerName = (order: any) =>
+  order?.shipping_address?.first_name ||
+  order?.billing_address?.first_name ||
+  order?.customer?.first_name ||
+  undefined
+
+const formatOrderRef = (order: any) =>
+  order?.display_id ? `#${order.display_id}` : order?.id
+
+const collectTrackingNumbers = (fulfillment: any) => {
+  const trackingNumbers = new Set<string>()
+  if (fulfillment?.data?.awb) {
+    trackingNumbers.add(String(fulfillment.data.awb))
+  }
+  if (fulfillment?.data?.tracking_number) {
+    trackingNumbers.add(String(fulfillment.data.tracking_number))
+  }
+  for (const label of fulfillment?.labels || []) {
+    if (label?.tracking_number) {
+      trackingNumbers.add(String(label.tracking_number))
+    }
+  }
+  return Array.from(trackingNumbers)
+}
+
+const resolveTrackingUrl = (fulfillment: any) =>
+  fulfillment?.data?.tracking_url ??
+  fulfillment?.tracking_links?.[0]?.url ??
+  fulfillment?.data?.label_url
 
 export default async function shipmentCreatedHandler({
   event: { data },
   container,
 }: SubscriberArgs<ShipmentCreatedEvent>) {
   const logger = container.resolve(ContainerRegistrationKeys.LOGGER)
-  const notificationModuleService = container.resolve(Modules.NOTIFICATION)
   const query = container.resolve(ContainerRegistrationKeys.QUERY)
+  const gmailNotificationService = new GmailNotificationService()
 
   if (data?.no_notification) {
     logger.info(
@@ -32,6 +63,10 @@ export default async function shipmentCreatedHandler({
         "order.email",
         "order.total",
         "order.currency_code",
+        "order.shipping_address.first_name",
+        "order.billing_address.first_name",
+        "order.customer.first_name",
+        "tracking_links.url",
       ],
       filters: { id: data.id },
     })
@@ -46,37 +81,29 @@ export default async function shipmentCreatedHandler({
       return
     }
 
-    const trackingNumbers = new Set<string>()
-    if (fulfillment?.data?.awb) {
-      trackingNumbers.add(String(fulfillment.data.awb))
+    const trackingNumbers = collectTrackingNumbers(fulfillment)
+    const awb = trackingNumbers[0]
+
+    if (!awb) {
+      logger.warn(
+        `Shipment created email skipped: missing AWB for fulfillment ${data.id}`
+      )
+      return
     }
-    for (const label of fulfillment?.labels || []) {
-      if (label?.tracking_number) {
-        trackingNumbers.add(String(label.tracking_number))
-      }
-    }
+
+    const orderRef = formatOrderRef(order)
+    const customerName = getCustomerName(order)
+    const trackingUrl = resolveTrackingUrl(fulfillment)
 
     logger.info(
-      `Shipment created email queued for ${order.email} (order ${order.id})`
+      `Shipment created email queued for ${order.email} (order ${orderRef})`
     )
 
-    await notificationModuleService.createNotifications({
-      to: order.email,
-      channel: "email",
-      template: "order.shipment_created",
-      data: {
-        id: order.id,
-        display_id: order.display_id,
-        total: order.total,
-        currency_code: order.currency_code,
-        fulfillment: {
-          id: fulfillment?.id,
-          tracking_numbers: Array.from(trackingNumbers),
-        },
-      },
-      trigger_type: "shipment.created",
-      resource_id: order.id,
-      resource_type: "order",
+    await gmailNotificationService.sendAwbCreated(order.email, {
+      order_id: orderRef,
+      awb,
+      tracking_url: trackingUrl,
+      customer_name: customerName,
     })
   } catch (error) {
     logger.error("Failed to send shipment created email", error)

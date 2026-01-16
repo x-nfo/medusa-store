@@ -1,6 +1,7 @@
 import { createShipmentWorkflow } from "@medusajs/core-flows"
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { MedusaError, Modules } from "@medusajs/framework/utils"
+import { RajaOngkirFulfillmentService } from "../../../../../modules/fulfillment-rajaongkir"
 
 type ShipperInfo = {
   name?: string
@@ -13,12 +14,10 @@ type ShipperInfo = {
 type CreateShipmentRequest = {
   order_id?: string
   courier?: string
-  service?: string
-  weight?: number
+  service_code?: string
+  weight_grams?: number
   destination_city_id?: string
   shipper?: ShipperInfo
-  payload?: Record<string, unknown>
-  payload_format?: "json" | "form"
 }
 
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
@@ -31,20 +30,24 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
 
   const fulfillmentModuleService = req.scope.resolve(Modules.FULFILLMENT)
   const orderModuleService = req.scope.resolve(Modules.ORDER)
-  const rajaOngkirService = req.scope.resolve("rajaongkir")
+  const roService = new RajaOngkirFulfillmentService({}, {})
 
-  const fulfillment = await fulfillmentModuleService.retrieveFulfillment(fulfillment_id, {
-    relations: ["labels", "shipping_option", "delivery_address"],
-  })
+  const fulfillment = await fulfillmentModuleService.retrieveFulfillment(
+    fulfillment_id,
+    {
+      relations: ["labels", "shipping_option", "delivery_address"],
+    }
+  )
 
-  if (fulfillment.provider_id !== "rajaongkir") {
+  const providerId = fulfillment.provider_id
+  if (providerId !== "rajaongkir" && providerId !== "fp_rajaongkir") {
     throw new MedusaError(
       MedusaError.Types.INVALID_DATA,
       "Fulfillment provider is not RajaOngkir"
     )
   }
 
-  const existingData = fulfillment.data || {}
+  const existingData = (fulfillment.data as Record<string, unknown>) || {}
   const existingExternalId =
     existingData.external_shipment_id || fulfillment.metadata?.external_shipment_id
 
@@ -67,11 +70,11 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     fulfillment.shipping_option?.data?.courier ||
     shippingMethod?.data?.courier
 
-  const service =
-    body.service ||
-    (existingData as any).service ||
-    fulfillment.shipping_option?.data?.service ||
-    shippingMethod?.data?.service
+  const service_code =
+    body.service_code ||
+    (existingData as any).service_code ||
+    fulfillment.shipping_option?.data?.service_code ||
+    shippingMethod?.data?.service_code
 
   if (!courier) {
     throw new MedusaError(MedusaError.Types.INVALID_DATA, "courier is required")
@@ -90,98 +93,80 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   }
 
   const weight =
-    body.weight ||
-    (existingData as any).weight ||
-    rajaOngkirService.calculateWeightFromItems(order.items || [])
+    body.weight_grams ||
+    (existingData as any).weight_grams ||
+    roService.calculateWeightFromItems(order.items || [])
 
-  const defaultShipper = rajaOngkirService.getOriginDetails()
-  const shipper = {
-    ...defaultShipper,
-    ...body.shipper,
+  const origin = {
+    ...roService.getOriginDetails(),
+    ...(body.shipper || {}),
   }
-
-  if (!shipper.name || !shipper.phone || !shipper.address || !shipper.city_id) {
+  if (!origin.name || !origin.phone || !origin.address || !origin.city_id) {
     throw new MedusaError(
       MedusaError.Types.INVALID_DATA,
-      "shipper name, phone, address, and city_id are required"
+      "Origin (store) name, phone, address, and city_id are required"
     )
   }
 
-  const payload =
-    body.payload || {
-      order_id: order.id,
-      origin: defaultShipper.city_id,
-      destination: destinationCityId,
-      weight,
-      courier,
-      service,
-      shipper,
-      receiver: {
-        name: `${fulfillment.delivery_address?.first_name || ""} ${
-          fulfillment.delivery_address?.last_name || ""
-        }`.trim(),
-        phone: fulfillment.delivery_address?.phone,
-        address: fulfillment.delivery_address?.address_1,
-        city_id: destinationCityId,
-        postal_code: fulfillment.delivery_address?.postal_code,
-      },
-      items: (order.items || []).map((item: any) => ({
-        name: item.title,
-        qty: item.quantity,
-      })),
-    }
+  const receiver = {
+    name: `${fulfillment.delivery_address?.first_name || ""} ${
+      fulfillment.delivery_address?.last_name || ""
+    }`.trim(),
+    phone: fulfillment.delivery_address?.phone,
+    address: fulfillment.delivery_address?.address_1,
+    city_id: destinationCityId,
+    postal_code: fulfillment.delivery_address?.postal_code,
+  }
 
-  const payloadFormat = body.payload_format || "json"
-  const response = await rajaOngkirService.createDeliveryOrder(
-    payload,
-    payloadFormat
-  )
-
-  const ro = response.rajaongkir || response
-  const orderResult = ro.order || ro.data || ro
-  const externalShipmentId =
-    orderResult.id ||
-    orderResult.order_id ||
-    ro.order_id ||
-    orderResult.external_id ||
-    orderResult.external_shipment_id
-
-  if (!externalShipmentId) {
+  if (!receiver.name || !receiver.phone || !receiver.address) {
     throw new MedusaError(
-      MedusaError.Types.UNEXPECTED_STATE,
-      "RajaOngkir response missing external shipment id"
+      MedusaError.Types.INVALID_DATA,
+      "Recipient name, phone, and address are required"
     )
   }
 
-  const awb =
-    orderResult.awb ||
-    orderResult.waybill ||
-    orderResult.tracking_number ||
-    ro.awb
+  const shipmentPayload = {
+    order_id: order.id,
+    courier,
+    service_code,
+    sender: origin,
+    recipient: receiver,
+    items: (order.items || []).map((item: any, idx: number) => ({
+      name: item.title || `Item ${idx + 1}`,
+      qty: item.quantity,
+      price: Number(item.unit_price || 0),
+    })),
+    weight_grams: Number(weight || 0),
+  }
 
-  const labelUrl = orderResult.label_url || orderResult.label?.url || ro.label_url
-  const trackingUrl =
-    orderResult.tracking_url || orderResult.tracking?.url || ro.tracking_url
+  if (!shipmentPayload.weight_grams || shipmentPayload.weight_grams <= 0) {
+    throw new MedusaError(
+      MedusaError.Types.INVALID_DATA,
+      "weight_grams must be greater than 0"
+    )
+  }
+
+  const response = await roService.createShipment(shipmentPayload)
 
   const updatedData = {
     ...(existingData as Record<string, unknown>),
-    external_shipment_id: externalShipmentId,
-    awb,
-    label_url: labelUrl,
-    tracking_url: trackingUrl,
+    external_shipment_id: response.external_shipment_id,
+    awb: response.awb,
+    label_url: response.label_url,
+    tracking_url: response.tracking_url,
     courier,
-    service,
-    weight,
-    response_json: response,
+    service_code,
+    weight_grams: shipmentPayload.weight_grams,
+    response_json: response.raw_response ?? response,
   }
 
   const labels =
-    awb || labelUrl || trackingUrl
+    response.awb || response.label_url || response.tracking_url
       ? [
           {
-            tracking_number: awb || externalShipmentId,
-            tracking_url: trackingUrl || "",
-            label_url: labelUrl || "",
+            tracking_number: response.awb || response.external_shipment_id,
+            tracking_url: response.tracking_url || "",
+            label_url: response.label_url || "",
           },
         ]
       : []

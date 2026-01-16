@@ -1,12 +1,14 @@
 import { processPaymentWorkflow } from "@medusajs/core-flows"
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { Modules, PaymentActions, PaymentSessionStatus } from "@medusajs/framework/utils"
+import { MidtransClient } from "../../../services/midtrans-client"
+import { mapMidtransStatus } from "../../../modules/payment-midtrans/service"
 
 const PROVIDER_ID = "pp_midtrans"
 
 const buildMidtransData = (payload: Record<string, unknown>) => ({
     midtrans_order_id: payload.order_id,
-    transaction_id: payload.transaction_id,
+    midtrans_transaction_id: payload.transaction_id,
     midtrans_transaction_status: payload.transaction_status,
     midtrans_fraud_status: payload.fraud_status,
     midtrans_status_code: payload.status_code,
@@ -27,9 +29,9 @@ const isDuplicateWebhook = (
         )
     }
 
-    if (incoming.transaction_id && existing.transaction_id) {
+    if (incoming.midtrans_transaction_id && existing.midtrans_transaction_id) {
         return (
-            existing.transaction_id === incoming.transaction_id &&
+            existing.midtrans_transaction_id === incoming.midtrans_transaction_id &&
             existing.midtrans_transaction_status === incoming.midtrans_transaction_status &&
             existing.midtrans_fraud_status === incoming.midtrans_fraud_status
         )
@@ -41,25 +43,26 @@ const isDuplicateWebhook = (
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     const logger = req.scope.resolve("logger")
     try {
-        const paymentModuleService = req.scope.resolve(Modules.PAYMENT)
-        const payload = {
-            provider: PROVIDER_ID,
-            payload: {
-                data: req.body as Record<string, unknown>,
-                rawData: req.rawBody ?? JSON.stringify(req.body ?? {}),
-                headers: req.headers as Record<string, unknown>,
-            },
+        const verifier = new MidtransClient()
+        const valid = verifier.verifyWebhookSignature(
+            (req.body ?? {}) as Record<string, unknown>
+        )
+        if (!valid) {
+            return res.status(401).json({ error: "Invalid Midtrans signature" })
         }
 
-        const actionAndData = await paymentModuleService.getWebhookActionAndData(payload)
-
-        if (!actionAndData.data) {
+        const paymentModuleService = req.scope.resolve(Modules.PAYMENT)
+        const payloadData = req.body as Record<string, unknown>
+        const sessionId = String(payloadData.order_id ?? "")
+        if (!sessionId) {
             return res.json({ status: "OK" })
         }
 
-        const sessionId = actionAndData.data.session_id
         const session = await paymentModuleService.retrievePaymentSession(sessionId)
-        const payloadData = req.body as Record<string, unknown>
+        if (session.provider_id !== PROVIDER_ID) {
+            return res.json({ status: "OK" })
+        }
+
         const midtransData = buildMidtransData(payloadData)
         const updatedData = {
             ...(session.data ?? {}),
@@ -70,10 +73,13 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
             return res.json({ status: "OK" })
         }
 
-        if (
-            actionAndData.action === PaymentActions.FAILED ||
-            actionAndData.action === PaymentActions.REQUIRES_MORE
-        ) {
+        const mapping = mapMidtransStatus(
+            String(payloadData.transaction_status ?? ""),
+            String(payloadData.fraud_status ?? "")
+        )
+        const action = mapping.action
+
+        if (action === PaymentActions.FAILED || action === PaymentActions.REQUIRES_MORE) {
             await paymentModuleService.updatePaymentSession({
                 id: sessionId,
                 amount: session.amount,
@@ -85,7 +91,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
             return res.json({ status: "OK" })
         }
 
-        if (actionAndData.action === PaymentActions.PENDING) {
+        if (action === PaymentActions.PENDING) {
             await paymentModuleService.updatePaymentSession({
                 id: sessionId,
                 amount: session.amount,
@@ -97,7 +103,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
             return res.json({ status: "OK" })
         }
 
-        if (actionAndData.action === PaymentActions.NOT_SUPPORTED) {
+        if (action === PaymentActions.NOT_SUPPORTED) {
             return res.json({ status: "OK" })
         }
 
@@ -106,9 +112,26 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
             amount: session.amount,
             currency_code: session.currency_code,
             data: updatedData,
+            status: PaymentSessionStatus.CAPTURED,
         })
 
-        await processPaymentWorkflow(req.scope).run({ input: actionAndData })
+        await processPaymentWorkflow(req.scope).run({
+            input: {
+                action,
+                data: {
+                    session_id: sessionId,
+                    amount: session.amount,
+                },
+            },
+        })
+
+        await paymentModuleService.updatePaymentSession({
+            id: sessionId,
+            amount: session.amount,
+            currency_code: session.currency_code,
+            data: updatedData,
+            status: PaymentSessionStatus.CAPTURED,
+        })
 
         res.json({ status: "OK" })
     } catch (err: any) {

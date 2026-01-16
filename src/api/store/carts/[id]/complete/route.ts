@@ -4,10 +4,62 @@ import {
   ContainerRegistrationKeys,
   MedusaError,
   Modules,
+  remoteQueryObjectFromString,
 } from "@medusajs/framework/utils"
-import { refetchCart } from "@medusajs/medusa/dist/api/store/carts/helpers"
-import { defaultStoreCartFields } from "@medusajs/medusa/dist/api/store/carts/query-config"
 import { completeOrderWithReservationWorkflowId } from "../../../../../workflows/complete-order-with-reservation"
+
+const defaultStoreCartFields = [
+  "id",
+  "currency_code",
+  "email",
+  "region_id",
+  "created_at",
+  "updated_at",
+  "completed_at",
+  "total",
+  "subtotal",
+  "tax_total",
+  "discount_total",
+  "item_total",
+  "item_subtotal",
+  "shipping_total",
+  "metadata",
+  "items.id",
+  "items.title",
+  "items.quantity",
+  "items.unit_price",
+  "items.variant_id",
+  "customer.id",
+  "customer.email",
+  "shipping_address.id",
+  "shipping_address.metadata",
+  "billing_address.id",
+  "region.id",
+  "region.currency_code",
+  "*payment_collection",
+  "*payment_collection.payment_sessions",
+]
+
+const refetchCart = async (
+  id: string,
+  scope: MedusaRequest["scope"],
+  fields: string[]
+) => {
+  const remoteQuery = scope.resolve(ContainerRegistrationKeys.REMOTE_QUERY)
+  const queryObject = remoteQueryObjectFromString({
+    entryPoint: "cart",
+    variables: { filters: { id } },
+    fields,
+  })
+  const [cart] = await remoteQuery(queryObject)
+  if (!cart) {
+    throw new MedusaError(
+      MedusaError.Types.NOT_FOUND,
+      `Cart with id '${id}' not found`
+    )
+  }
+  return cart
+}
 
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const idempotencyKey = Array.isArray(req.headers["idempotency-key"])
@@ -26,7 +78,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const { errors, result, transaction } = await workflowEngine.run(
     completeOrderWithReservationWorkflowId,
     {
-      input: { id: cartId },
+      input: { cart_id: cartId, idempotency_key: idempotencyKey },
       throwOnError: false,
     }
   )
@@ -37,8 +89,6 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       "Cart is already being completed by another request"
     )
   }
-
-  const query = req.scope.resolve(ContainerRegistrationKeys.QUERY)
 
   if (errors?.[0]) {
     const error = errors[0].error
@@ -74,14 +124,8 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     return
   }
 
-  const { data } = await query.graph({
-    entity: "order",
-    fields: req.queryConfig.fields,
-    filters: { id: result.id },
-  })
-
   res.status(200).json({
-    type: "order",
-    order: data[0],
+    type: "reservation",
+    data: result,
   })
 }

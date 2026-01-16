@@ -1,2 +1,9 @@
-export { GmailNotificationService } from "./service"
+import { ModuleProvider, Modules } from "@medusajs/framework/utils"
+import { GmailNotificationService } from "./service"
+
+export default ModuleProvider(Modules.NOTIFICATION, {
+  services: [GmailNotificationService],
+})
+
+export { GmailNotificationService }
 export * from "./types"

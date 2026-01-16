@@ -38,6 +38,17 @@ export type MidtransWebhookPayload = {
   payment_type?: string
 }
 
+export type MidtransStatusResponse = {
+  status_code?: string
+  status_message?: string
+  transaction_id?: string
+  transaction_status?: string
+  fraud_status?: string
+  order_id?: string
+  gross_amount?: string
+  transaction_time?: string
+}
+
 export class MidtransClient {
   private serverKey: string
   private baseUrl: string
@@ -56,25 +67,66 @@ export class MidtransClient {
     return `Basic ${token}`
   }
 
+  private async request<T>(url: string, init: RequestInit, label: string): Promise<T> {
+    const maxAttempts = 3
+    let lastError: any
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const res = await fetch(url, init)
+        if (!res.ok) {
+          const text = await res.text()
+          if (res.status >= 500 && attempt < maxAttempts) {
+            logger.warn("Midtrans request retry", { label, status: res.status, attempt })
+            await new Promise((resolve) => setTimeout(resolve, 200 * attempt))
+            continue
+          }
+          throw new Error(`Midtrans error: ${res.status} ${text}`)
+        }
+
+        return (await res.json()) as T
+      } catch (err) {
+        lastError = err
+        if (attempt < maxAttempts) {
+          logger.warn("Midtrans request failed, retrying", { label, attempt })
+          await new Promise((resolve) => setTimeout(resolve, 200 * attempt))
+          continue
+        }
+        break
+      }
+    }
+
+    throw lastError
+  }
+
   async createSnapTransaction(payload: MidtransSnapRequest): Promise<MidtransSnapResponse> {
     const url = `${this.baseUrl}/snap/v1/transactions`
     logger.info("Midtrans create snap transaction", { url, order_id: payload.order_id })
 
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: this.authHeader(),
+    // Midtrans requires transaction_details wrapper
+    const midtransPayload = {
+      transaction_details: {
+        order_id: payload.order_id,
+        gross_amount: payload.gross_amount,
       },
-      body: JSON.stringify(payload),
-    })
-
-    if (!res.ok) {
-      const text = await res.text()
-      throw new Error(`Midtrans Snap error: ${res.status} ${text}`)
+      customer_details: payload.customer_details,
+      item_details: payload.item_details,
+      enabled_payments: payload.enabled_payments,
+      callbacks: payload.callbacks,
     }
 
-    return (await res.json()) as MidtransSnapResponse
+    return this.request<MidtransSnapResponse>(
+      url,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: this.authHeader(),
+        },
+        body: JSON.stringify(midtransPayload),
+      },
+      "createSnapTransaction"
+    )
   }
 
   /**
@@ -94,5 +146,21 @@ export class MidtransClient {
       logger.warn("verifyWebhookSignature failed", e)
       return false
     }
+  }
+
+  async getTransactionStatus(order_id: string): Promise<MidtransStatusResponse> {
+    const url = `${this.baseUrl}/v2/${order_id}/status`
+    logger.info("Midtrans get transaction status", { url, order_id })
+    return this.request<MidtransStatusResponse>(
+      url,
+      {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: this.authHeader(),
+        },
+      },
+      "getTransactionStatus"
+    )
   }
 }

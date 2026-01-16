@@ -34,6 +34,10 @@ module.exports = defineConfig({
       options: {
         providers: [
           {
+            resolve: "@medusajs/fulfillment-manual",
+            id: "manual",
+          },
+          {
             resolve: "./src/modules/fulfillment-rajaongkir",
             id: "rajaongkir",
             options: {

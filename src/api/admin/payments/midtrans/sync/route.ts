@@ -16,9 +16,9 @@ const isDuplicateStatus = (
         )
     }
 
-    if (incoming.transaction_id && existing.transaction_id) {
+    if (incoming.midtrans_transaction_id && existing.midtrans_transaction_id) {
         return (
-            existing.transaction_id === incoming.transaction_id &&
+            existing.midtrans_transaction_id === incoming.midtrans_transaction_id &&
             existing.midtrans_transaction_status === incoming.midtrans_transaction_status &&
             existing.midtrans_fraud_status === incoming.midtrans_fraud_status
         )
