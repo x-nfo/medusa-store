@@ -1,203 +1,166 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import {
-  ContainerRegistrationKeys,
-  MedusaError,
-  Modules,
+    ContainerRegistrationKeys,
+    MedusaError,
+    remoteQueryObjectFromString,
 } from "@medusajs/framework/utils"
-import { createPaymentCollectionForCartWorkflow } from "@medusajs/core-flows"
-import { MidtransPaymentService } from "../../../../../modules/payment-midtrans/service"
+import {
+    createSnapTransaction,
+    SnapTransactionParams,
+    ItemDetail,
+} from "../../../../../services/midtrans"
 
-const PROVIDER_ID = "pp_midtrans"
+type SnapInitiateRequest = {
+    cart_id: string
+    finish_url?: string
+}
 
-type SnapRequest = {
-  cart_id?: string
-  finish_url?: string
+// Fields needed for Midtrans transaction
+const cartFields = [
+    "id",
+    "email",
+    "total",
+    "subtotal",
+    "shipping_total",
+    "metadata",
+    "items.id",
+    "items.title",
+    "items.quantity",
+    "items.unit_price",
+    "items.variant_id",
+    "items.variant.title",
+    "shipping_address.first_name",
+    "shipping_address.last_name",
+    "shipping_address.phone",
+]
+
+const fetchCart = async (
+    cartId: string,
+    scope: MedusaRequest["scope"]
+) => {
+    const remoteQuery = scope.resolve(ContainerRegistrationKeys.REMOTE_QUERY)
+    const queryObject = remoteQueryObjectFromString({
+        entryPoint: "cart",
+        variables: { filters: { id: cartId } },
+        fields: cartFields,
+    })
+    const [cart] = await remoteQuery(queryObject)
+    return cart
 }
 
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
-  const { cart_id, finish_url } = (req.body ?? {}) as SnapRequest
+    const { cart_id, finish_url } = (req.body ?? {}) as SnapInitiateRequest
 
-  if (!cart_id) {
-    throw new MedusaError(MedusaError.Types.INVALID_DATA, "cart_id is required")
-  }
-
-  const query = req.scope.resolve(ContainerRegistrationKeys.QUERY)
-  const paymentModuleService = req.scope.resolve(Modules.PAYMENT)
-  const cartModuleService = req.scope.resolve(Modules.CART)
-
-  // Use service directly instead of resolving from container
-  const provider = new MidtransPaymentService({}, {
-    serverKey: process.env.MIDTRANS_SERVER_KEY,
-    isProduction: process.env.MIDTRANS_IS_PRODUCTION === 'true',
-  })
-
-  const { data: cartPayments } = await query.graph({
-    entity: "cart_payment_collection",
-    fields: ["payment_collection_id"],
-    filters: { cart_id },
-  })
-
-  let paymentCollectionId = cartPayments?.[0]?.payment_collection_id
-
-  // If payment collection doesn't exist, create it using Medusa workflow
-  if (!paymentCollectionId) {
-    try {
-      const { result } = await createPaymentCollectionForCartWorkflow(req.scope).run({
-        input: { cart_id },
-      })
-
-      paymentCollectionId = result?.id
-
-      if (!paymentCollectionId) {
-        throw new MedusaError(
-          MedusaError.Types.INVALID_DATA,
-          "Failed to create payment collection for cart"
-        )
-      }
-    } catch (error: any) {
-      console.error("Error creating payment collection:", error)
-      throw new MedusaError(
-        MedusaError.Types.INVALID_DATA,
-        `Payment collection creation failed: ${error.message || error}`
-      )
+    if (!cart_id) {
+        throw new MedusaError(MedusaError.Types.INVALID_DATA, "cart_id is required")
     }
-  }
 
-  const { data: collections } = await query.graph({
-    entity: "payment_collection",
-    fields: ["id", "amount", "currency_code"],
-    filters: { id: paymentCollectionId },
-  })
+    try {
+        // Fetch cart using remoteQuery (Medusa v2 pattern)
+        const cart = await fetchCart(cart_id, req.scope)
 
-  const paymentCollection = collections?.[0]
-  if (!paymentCollection) {
-    throw new MedusaError(
-      MedusaError.Types.INVALID_DATA,
-      "payment collection not found"
-    )
-  }
+        if (!cart) {
+            throw new MedusaError(MedusaError.Types.NOT_FOUND, "Cart not found")
+        }
 
-  // Validate amount is greater than 0
-  const amount = Number(paymentCollection.amount) || 0
-  if (amount <= 0) {
-    throw new MedusaError(
-      MedusaError.Types.INVALID_DATA,
-      "Cart is empty or has no valid total. Please add items to your cart before proceeding to payment."
-    )
-  }
+        if (!cart.items || cart.items.length === 0) {
+            throw new MedusaError(
+                MedusaError.Types.INVALID_DATA,
+                "Cart is empty"
+            )
+        }
 
-  const { data: sessions } = await query.graph({
-    entity: "payment_session",
-    fields: ["id", "amount", "currency_code", "data", "provider_id"],
-    filters: {
-      payment_collection_id: paymentCollectionId,
-      provider_id: PROVIDER_ID,
-    },
-  })
+        // Calculate totals
+        const subtotal = cart.items.reduce((sum: number, item: any) => {
+            const unitPrice = item.unit_price || 0
+            const quantity = item.quantity || 0
+            return sum + unitPrice * quantity
+        }, 0)
 
-  let session = sessions?.[0]
-  if (!session) {
-    session = await paymentModuleService.createPaymentSession(
-      paymentCollectionId,
-      {
-        provider_id: PROVIDER_ID,
-        amount: paymentCollection.amount,
-        currency_code: paymentCollection.currency_code,
-        data: {},
-      }
-    )
-  }
+        // Get shipping total from cart if available
+        const shippingTotal = cart.shipping_total || 0
+        const grossAmount = cart.total || (subtotal + shippingTotal)
 
-  const existingToken = (session.data as Record<string, unknown> | null)
-    ?.midtrans_token as string | undefined
-  const existingRedirect = (session.data as Record<string, unknown> | null)
-    ?.midtrans_redirect_url as string | undefined
+        // Generate unique order ID for Midtrans
+        const orderId = `ORDER-${cart_id.substring(0, 8)}-${Date.now()}`
 
-  if (existingToken && existingRedirect) {
-    return res.json({ token: existingToken, redirect_url: existingRedirect })
-  }
+        // Build item details for Midtrans
+        const itemDetails: ItemDetail[] = cart.items.map((item: any) => ({
+            id: item.variant_id || item.id,
+            price: Math.round(item.unit_price || 0),
+            quantity: item.quantity || 1,
+            name: (item.title || item.variant?.title || "Product").substring(0, 50),
+        }))
 
-  // Use Query Graph API for Medusa v2 - safer than direct relations
-  const { data: carts } = await query.graph({
-    entity: "cart",
-    fields: [
-      "id",
-      "email",
-      "items.*",
-      "items.variant.*",
-      "shipping_address.*",
-      "shipping_methods.*",
-    ],
-    filters: { id: cart_id },
-  })
+        // Add shipping as item if present
+        if (shippingTotal > 0) {
+            itemDetails.push({
+                id: "SHIPPING",
+                price: Math.round(shippingTotal),
+                quantity: 1,
+                name: "Ongkos Kirim",
+            })
+        }
 
-  const cart = carts?.[0]
-  if (!cart) {
-    throw new MedusaError(MedusaError.Types.NOT_FOUND, "Cart not found")
-  }
+        // Build customer details
+        const shippingAddress = cart.shipping_address
+        const customerDetails = {
+            first_name: shippingAddress?.first_name || "Customer",
+            last_name: shippingAddress?.last_name || "",
+            email: cart.email || "guest@example.com",
+            phone: shippingAddress?.phone || "",
+        }
 
-  // Extract customer name from shipping_address or email
-  const customerName =
-    [cart.shipping_address?.first_name, cart.shipping_address?.last_name]
-      .filter(Boolean)
-      .join(" ")
-      .trim() || cart.email || undefined
+        // Build Snap transaction params
+        const snapParams: SnapTransactionParams = {
+            transaction_details: {
+                order_id: orderId,
+                gross_amount: Math.round(grossAmount),
+            },
+            customer_details: customerDetails,
+            item_details: itemDetails,
+        }
 
-  // Construct items array including products and shipping
-  const items = [
-    ...(cart.items ?? []).map((item: any, idx: number) => ({
-      id: item.variant?.sku || item.id,
-      name: item.title || item.variant?.title || `Item ${idx + 1}`,
-      price: Math.round(Number(item.unit_price ?? 0)),
-      quantity: Number(item.quantity ?? 1),
-    })),
-    ...(cart.shipping_methods ?? []).map((method: any) => ({
-      id: method.id,
-      name: method.name || "Shipping Cost",
-      price: Math.round(Number(method.amount ?? 0)),
-      quantity: 1,
-    })),
-  ]
+        // Add finish callback URL if provided
+        if (finish_url) {
+            snapParams.callbacks = {
+                finish: finish_url,
+            }
+        }
 
-  // Calculate total items calculation to check for differences (tax, rounding, etc)
-  const itemsTotal = items.reduce((sum, item) => sum + (item.price * item.quantity), 0)
-  const grossAmount = Math.round(Number(session.amount))
+        // Create Snap transaction
+        const result = await createSnapTransaction(snapParams)
 
-  if (itemsTotal !== grossAmount) {
-    const diff = grossAmount - itemsTotal
-    items.push({
-      id: "adjustment",
-      name: "Tax / Adjustment",
-      price: diff,
-      quantity: 1
-    })
-  }
+        // Update cart metadata with midtrans_order_id for webhook to find cart later
+        try {
+            const cartModule = req.scope.resolve("cart")
+            await cartModule.updateCarts([{
+                id: cart_id,
+                metadata: {
+                    ...cart.metadata,
+                    midtrans_order_id: orderId,
+                },
+            }])
+        } catch (updateError) {
+            console.warn("Failed to update cart metadata with midtrans_order_id:", updateError)
+            // Continue anyway - payment can still work, just webhook won't find cart
+        }
 
-  const snap = await provider.createSnapSession({
-    order_id: session.id,
-    gross_amount: grossAmount,
-    customer: {
-      name: customerName,
-      email: cart.email ?? undefined,
-      phone: cart.shipping_address?.phone ?? undefined,
-    },
-    items: items,
-    finish_url,
-  })
+        res.json({
+            token: result.token,
+            redirect_url: result.redirect_url,
+            order_id: orderId,
+        })
+    } catch (error: any) {
+        console.error("Midtrans Snap initiation error:", error)
 
-  const updatedData = {
-    ...(session.data ?? {}),
-    midtrans_order_id: session.id,
-    midtrans_token: snap.token,
-    midtrans_redirect_url: snap.redirect_url,
-  }
+        if (error instanceof MedusaError) {
+            throw error
+        }
 
-  await paymentModuleService.updatePaymentSession({
-    id: session.id,
-    amount: session.amount,
-    currency_code: session.currency_code,
-    data: updatedData,
-  })
-
-  res.json({ token: snap.token, redirect_url: snap.redirect_url })
+        throw new MedusaError(
+            MedusaError.Types.UNEXPECTED_STATE,
+            `Failed to initiate payment: ${error.message || "Unknown error"}`
+        )
+    }
 }

@@ -14,21 +14,7 @@ module.exports = defineConfig({
     }
   },
   modules: [
-    {
-      resolve: "@medusajs/medusa/payment",
-      options: {
-        providers: [
-          {
-            resolve: "./src/modules/payment-midtrans",
-            options: {
-              isProduction: process.env.MIDTRANS_IS_PRODUCTION === 'true',
-              serverKey: process.env.MIDTRANS_SERVER_KEY,
-              clientKey: process.env.MIDTRANS_CLIENT_KEY,
-            }
-          }
-        ]
-      }
-    },
+
     {
       resolve: "@medusajs/medusa/fulfillment",
       options: {

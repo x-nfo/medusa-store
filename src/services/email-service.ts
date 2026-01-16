@@ -18,16 +18,16 @@ const USE_JSON_TRANSPORT =
 let emailTransporter: Transporter | null = null
 
 const buildTransporter = () => {
-  if (!GMAIL_USER || !GMAIL_APP_PASSWORD) {
-    logger.warn(
-      "Gmail SMTP is not configured (missing GMAIL_USER or GMAIL_APP_PASSWORD)"
-    )
-    throw new Error("Gmail SMTP credentials are required to send email")
-  }
-
   if (USE_JSON_TRANSPORT) {
     logger.info("Email service using json transport (no outbound SMTP)")
     return nodemailer.createTransport({ jsonTransport: true })
+  }
+
+  if (!GMAIL_USER || !GMAIL_APP_PASSWORD) {
+    logger.warn(
+      "Gmail SMTP is not configured (missing GMAIL_USER or GMAIL_APP_PASSWORD). Emails will not be sent."
+    )
+    return null
   }
 
   return nodemailer.createTransport({
@@ -35,6 +35,9 @@ const buildTransporter = () => {
     auth: {
       user: GMAIL_USER,
       pass: GMAIL_APP_PASSWORD,
+    },
+    tls: {
+      rejectUnauthorized: false,
     },
   })
 }
@@ -50,14 +53,19 @@ export async function sendEmail(input: SendEmailInput): Promise<void> {
     return
   }
 
-  if (!emailTransporter) {
-    emailTransporter = buildTransporter()
-  }
-
-  const fromName = FROM_NAME || "Syari Store"
-  const fromAddress = FROM_ADDRESS || GMAIL_USER || "no-reply@example.com"
-
   try {
+    if (!emailTransporter) {
+      emailTransporter = buildTransporter()
+    }
+
+    if (!emailTransporter) {
+      logger.warn("Email send skipped: transporter not available")
+      return
+    }
+
+    const fromName = FROM_NAME || "Syari Store"
+    const fromAddress = FROM_ADDRESS || GMAIL_USER || "no-reply@example.com"
+
     const info = await emailTransporter.sendMail({
       from: `"${fromName}" <${fromAddress}>`,
       to: input.to,
@@ -77,6 +85,6 @@ export async function sendEmail(input: SendEmailInput): Promise<void> {
       subject: input.subject,
       error: error?.message ?? error,
     })
-    throw error
+    // Do not throw error to avoid crashing the request
   }
 }

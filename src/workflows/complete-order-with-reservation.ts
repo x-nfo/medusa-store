@@ -15,7 +15,7 @@ import {
 import { acquireLockStep, releaseLockStep } from "@medusajs/core-flows"
 import path from "path"
 
-const PROVIDER_ID = "pp_midtrans"
+
 const RESERVATION_TTL_MS = 15 * 60 * 1000
 
 // Bypass package export map to access core-flows utilities needed by the workflow.
@@ -212,128 +212,7 @@ const createReservationsStep = createStep(
   }
 )
 
-const ensureMidtransSessionStep = createStep(
-  "ensure-midtrans-session",
-  async (
-    { cart }: { cart: any },
-    { container }
-  ): Promise<StepResponse<SnapResponse & { session_id: string }>> => {
-    const query = container.resolve(ContainerRegistrationKeys.QUERY)
-    const paymentModuleService = container.resolve(Modules.PAYMENT)
-    const provider = container.resolve(PROVIDER_ID) as {
-      createSnapSession: (input: {
-        order_id: string
-        gross_amount: number
-        customer?: { name?: string; email?: string; phone?: string }
-        items?: Array<{ name: string; price: number; quantity: number }>
-      }) => Promise<SnapResponse>
-    }
 
-    const { data: cartPayments } = await query.graph({
-      entity: "cart_payment_collection",
-      fields: ["payment_collection_id"],
-      filters: { cart_id: cart.id },
-    })
-
-    const paymentCollectionId = cartPayments?.[0]?.payment_collection_id
-    if (!paymentCollectionId) {
-      throw new MedusaError(
-        MedusaError.Types.INVALID_DATA,
-        "payment collection not found for cart"
-      )
-    }
-
-    const { data: collections } = await query.graph({
-      entity: "payment_collection",
-      fields: ["id", "amount", "currency_code"],
-      filters: { id: paymentCollectionId },
-    })
-
-    const paymentCollection = collections?.[0]
-    if (!paymentCollection) {
-      throw new MedusaError(
-        MedusaError.Types.INVALID_DATA,
-        "payment collection not found"
-      )
-    }
-
-    const { data: sessions } = await query.graph({
-      entity: "payment_session",
-      fields: ["id", "amount", "currency_code", "data", "provider_id"],
-      filters: {
-        payment_collection_id: paymentCollectionId,
-        provider_id: PROVIDER_ID,
-      },
-    })
-
-    let session = sessions?.[0]
-    if (!session) {
-      session = await paymentModuleService.createPaymentSession(
-        paymentCollectionId,
-        {
-          provider_id: PROVIDER_ID,
-          amount: paymentCollection.amount,
-          currency_code: paymentCollection.currency_code,
-          data: {},
-        }
-      )
-    }
-
-    const existingToken = (session.data as Record<string, unknown> | null)
-      ?.midtrans_token as string | undefined
-    const existingRedirect = (session.data as Record<string, unknown> | null)
-      ?.midtrans_redirect_url as string | undefined
-
-    if (existingToken && existingRedirect) {
-      return new StepResponse({
-        session_id: session.id,
-        token: existingToken,
-        redirect_url: existingRedirect,
-      })
-    }
-
-    const customerName =
-      [cart.customer?.first_name, cart.customer?.last_name]
-        .filter(Boolean)
-        .join(" ")
-        .trim() || cart.email || undefined
-
-    const snap = await provider.createSnapSession({
-      order_id: session.id,
-      gross_amount: Math.round(Number(session.amount)),
-      customer: {
-        name: customerName,
-        email: cart.email ?? undefined,
-        phone: cart.customer?.phone ?? undefined,
-      },
-      items: (cart.items ?? []).map((item: any, idx: number) => ({
-        name: item.title || item.variant?.title || `Item ${idx + 1}`,
-        price: Math.round(Number(item.unit_price ?? 0)),
-        quantity: Number(item.quantity ?? 1),
-      })),
-    })
-
-    const updatedData = {
-      ...(session.data ?? {}),
-      midtrans_order_id: session.id,
-      midtrans_token: snap.token,
-      midtrans_redirect_url: snap.redirect_url,
-    }
-
-    await paymentModuleService.updatePaymentSession({
-      id: session.id,
-      amount: session.amount,
-      currency_code: session.currency_code,
-      data: updatedData,
-    })
-
-    return new StepResponse({
-      session_id: session.id,
-      token: snap.token,
-      redirect_url: snap.redirect_url,
-    })
-  }
-)
 
 export const completeOrderWithReservationWorkflowId =
   "complete-order-with-reservation"
@@ -366,11 +245,7 @@ export const completeOrderWithReservation = createWorkflow(
       })
     })
 
-    const paymentSession = when(
-      "ensure-payment-session-when-order-missing",
-      { existingOrder },
-      ({ existingOrder }) => !existingOrder
-    ).then(() => ensureMidtransSessionStep({ cart }))
+
 
     releaseLockStep({
       key: input.cart_id,
@@ -380,7 +255,7 @@ export const completeOrderWithReservation = createWorkflow(
       cart_id: input.cart_id,
       order_id: existingOrder,
       reservations: createdReservations,
-      payment_session: paymentSession,
+
     })
   }
 )
