@@ -2,6 +2,7 @@ import { createShipmentWorkflow } from "@medusajs/core-flows"
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { MedusaError, Modules } from "@medusajs/framework/utils"
 import { RajaOngkirFulfillmentService } from "../../../../../modules/fulfillment-rajaongkir"
+import { getOriginWithFallback } from "../../../../../services/stock-location-origin"
 
 type ShipperInfo = {
   name?: string
@@ -40,7 +41,8 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   )
 
   const providerId = fulfillment.provider_id
-  if (providerId !== "rajaongkir" && providerId !== "fp_rajaongkir") {
+  // Provider ID format: fp_{identifier}_{configId}
+  if (!providerId?.includes("rajaongkir")) {
     throw new MedusaError(
       MedusaError.Types.INVALID_DATA,
       "Fulfillment provider is not RajaOngkir"
@@ -97,21 +99,25 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     (existingData as any).weight_grams ||
     roService.calculateWeightFromItems(order.items || [])
 
+  // Get origin from Stock Location (Medusa Admin) with fallback to env vars
+  const stockLocationOrigin = await getOriginWithFallback(req.scope)
   const origin = {
-    ...roService.getOriginDetails(),
+    ...stockLocationOrigin,
     ...(body.shipper || {}),
   }
+
   if (!origin.name || !origin.phone || !origin.address || !origin.city_id) {
     throw new MedusaError(
       MedusaError.Types.INVALID_DATA,
-      "Origin (store) name, phone, address, and city_id are required"
+      "Origin (store) name, phone, address, and city_id are required. " +
+      "Please configure Stock Location in Medusa Admin (Settings > Locations & Shipping) " +
+      "with rajaongkir_city_id and phone in metadata."
     )
   }
 
   const receiver = {
-    name: `${fulfillment.delivery_address?.first_name || ""} ${
-      fulfillment.delivery_address?.last_name || ""
-    }`.trim(),
+    name: `${fulfillment.delivery_address?.first_name || ""} ${fulfillment.delivery_address?.last_name || ""
+      }`.trim(),
     phone: fulfillment.delivery_address?.phone,
     address: fulfillment.delivery_address?.address_1,
     city_id: destinationCityId,
@@ -163,12 +169,12 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const labels =
     response.awb || response.label_url || response.tracking_url
       ? [
-          {
-            tracking_number: response.awb || response.external_shipment_id,
-            tracking_url: response.tracking_url || "",
-            label_url: response.label_url || "",
-          },
-        ]
+        {
+          tracking_number: response.awb || response.external_shipment_id,
+          tracking_url: response.tracking_url || "",
+          label_url: response.label_url || "",
+        },
+      ]
       : []
 
   await createShipmentWorkflow(req.scope).run({
@@ -176,6 +182,16 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       id: fulfillment_id,
       labels,
       data: updatedData,
+    },
+  })
+
+  // Emit shipment.created event for subscribers (email notifications)
+  const eventBus = req.scope.resolve(Modules.EVENT_BUS)
+  await eventBus.emit({
+    name: "shipment.created",
+    data: {
+      id: fulfillment_id,
+      no_notification: false,
     },
   })
 

@@ -48,3 +48,10 @@ export type AwbCreatedPayload = {
   customer_name?: string
   courier?: string
 }
+
+export type DeliveryConfirmedPayload = {
+  order_id: string
+  awb: string
+  customer_name?: string
+  delivery_date?: string
+}

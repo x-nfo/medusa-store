@@ -220,3 +220,39 @@ export function awbCreatedTemplate(input: AwbCreatedTemplateInput) {
     html: wrapTemplate(subject, body),
   }
 }
+
+type DeliveryConfirmedTemplateInput = {
+  order_id: string
+  awb: string
+  customer_name?: string
+  delivery_date?: string
+}
+
+export function deliveryConfirmedTemplate(input: DeliveryConfirmedTemplateInput) {
+  const subject = `Pesanan ${input.order_id} telah diterima ✅`
+
+  const body = `
+    <p>${greeting(input.customer_name)}</p>
+    <p>Pesanan Anda dengan nomor <strong>${input.order_id}</strong> sudah sampai di tujuan${input.delivery_date ? ` pada ${input.delivery_date}` : ""}.</p>
+    
+    <div style="background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 8px; padding: 20px; margin: 20px 0; text-align: center;">
+      <div style="font-size: 48px; margin-bottom: 12px;">✅</div>
+      <div style="font-size: 18px; font-weight: 600; color: #065f46;">Pesanan Berhasil Diterima</div>
+      <div style="font-size: 13px; color: #047857; margin-top: 8px;">Nomor Resi: ${input.awb}</div>
+    </div>
+
+    <div style="background: #fef3c7; border: 1px solid #fcd34d; border-radius: 8px; padding: 16px; margin: 20px 0;">
+      <div style="color: #92400e; font-weight: 500;">⭐ Bagikan Pengalaman Anda</div>
+      <div style="color: #78350f; font-size: 14px; margin-top: 4px;">Kami sangat menghargai ulasan dari pelanggan. Berikan rating untuk produk yang Anda beli!</div>
+    </div>
+
+    <p style="color: #6b7280; font-size: 14px;">
+      Terima kasih sudah berbelanja di ${STORE_NAME}. Kami berharap Anda puas dengan pesanan Anda!
+    </p>
+  `
+
+  return {
+    subject,
+    html: wrapTemplate(subject, body),
+  }
+}

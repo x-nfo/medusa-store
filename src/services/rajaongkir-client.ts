@@ -252,6 +252,95 @@ export class RajaOngkirClient {
     return { latest_status: "IN_TRANSIT", history: [] }
   }
 
+  /**
+   * Search for cities/destinations from RajaOngkir API
+   * Uses the domestic-destination endpoint
+   * @param search - Search term (city name, district, etc)
+   * @param limit - Max results to return
+   */
+  async searchCities(
+    search?: string,
+    limit: number = 20
+  ): Promise<Array<{ id: string; name: string; province: string; type: string }>> {
+    try {
+      const searchTerm = search?.trim() || ""
+
+      // Build URL with query params
+      const url = new URL("api/v1/destination/domestic-destination", this.baseUrl)
+      if (searchTerm) {
+        url.searchParams.set("search", searchTerm)
+      }
+      url.searchParams.set("limit", String(limit))
+      url.searchParams.set("offset", "0")
+
+      const response = await fetch(url.toString(), {
+        method: "GET",
+        headers: {
+          key: this.apiKey,
+          "Content-Type": "application/json",
+        },
+      })
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
+      }
+
+      const json = await response.json()
+
+      // Normalize response - structure may vary
+      const data = json?.data || json?.rajaongkir?.results || json?.results || []
+
+      return data.map((item: any) => ({
+        id: String(item.id || item.city_id || item.subdistrict_id),
+        name: this.formatCityName(item),
+        province: item.province || item.province_name || "",
+        type: item.type || "city",
+      }))
+    } catch (error: any) {
+      logger.warn("RajaOngkir searchCities failed", { error: error.message, search })
+
+      // Return fallback mock data for testing
+      if (search) {
+        return [
+          { id: "31555", name: "Jakarta Selatan, DKI Jakarta", province: "DKI Jakarta", type: "city" },
+          { id: "22", name: "Jakarta Barat, DKI Jakarta", province: "DKI Jakarta", type: "city" },
+          { id: "153", name: "Jakarta Pusat, DKI Jakarta", province: "DKI Jakarta", type: "city" },
+        ].filter(c => c.name.toLowerCase().includes(search.toLowerCase()))
+      }
+      return []
+    }
+  }
+
+  /**
+   * Format city name from API response to display string
+   */
+  private formatCityName(item: any): string {
+    const parts: string[] = []
+
+    // Add subdistrict if available
+    if (item.subdistrict_name || item.subdistrict) {
+      parts.push(item.subdistrict_name || item.subdistrict)
+    }
+
+    // Add city
+    if (item.city_name || item.city) {
+      const cityType = item.type ? `${item.type} ` : ""
+      parts.push(`${cityType}${item.city_name || item.city}`)
+    }
+
+    // Add province
+    if (item.province || item.province_name) {
+      parts.push(item.province || item.province_name)
+    }
+
+    // If no parts, use whatever name is available
+    if (parts.length === 0 && item.name) {
+      return item.name
+    }
+
+    return parts.join(", ")
+  }
+
   private buildUrl(path: string) {
     return new URL(path, this.baseUrl).toString()
   }

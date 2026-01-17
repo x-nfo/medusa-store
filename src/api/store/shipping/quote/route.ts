@@ -68,38 +68,33 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   })
 
   /* 
-   * FIX: Fetch the actual Medusa Shipping Option ID for RajaOngkir.
+   * Fetch the actual Medusa Shipping Option ID for RajaOngkir.
    * The storefront needs this ID to call /carts/{id}/shipping-methods.
-   */
-  /* 
-   * FIX: Fetch the actual Medusa Shipping Option ID for RajaOngkir.
-   * The storefront needs this ID to call /carts/{id}/shipping-methods.
-   * provider_id is typically "rajaongkir_rajaongkir" (ModuleProviderId_ProviderId).
+   * provider_id format: fp_{identifier}_{configId}
    */
   const fulfillmentModule = req.scope.resolve("fulfillment")
 
-  // Try finding by specific provider ID first
+  // Try finding by specific provider ID first (format: fp_rajaongkir_rajaongkir)
   let shippingOptions = await fulfillmentModule.listShippingOptions({
-    provider_id: "rajaongkir_rajaongkir"
+    provider_id: "fp_rajaongkir_rajaongkir"
   }, {
     take: 1
   })
 
   // Fallback: search loosely if exact match fails
   if (!shippingOptions.length) {
-    const allOptions = await fulfillmentModule.listShippingOptions({
-      // @ts-ignore
-      provider_id: ["rajaongkir", "rajaongkir_rajaongkir"]
-    }, {
-      take: 5
+    const allOptions = await fulfillmentModule.listShippingOptions({}, {
+      take: 20
     })
-    shippingOptions = allOptions.filter(opt => opt.provider_id.includes("rajaongkir"))
+    shippingOptions = allOptions.filter((opt: any) =>
+      opt.provider_id?.includes("rajaongkir")
+    )
   }
 
   const shippingOptionId = shippingOptions[0]?.id
 
   if (!shippingOptionId) {
-    console.warn("WARNING: No Shipping Option found for provider 'rajaongkir_rajaongkir'. Please create one in Admin.")
+    console.warn("WARNING: No Shipping Option found for RajaOngkir provider. Please create one in Admin.")
     // Debug log to see what options exist if any
     const debugOpts = await fulfillmentModule.listShippingOptions({}, { take: 5, select: ["id", "provider_id", "name"] })
     console.warn("Available options:", JSON.stringify(debugOpts))

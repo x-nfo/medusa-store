@@ -2,11 +2,13 @@ import { sendEmail } from "../../services/email-service"
 import { logger } from "../../services/logger"
 import {
   awbCreatedTemplate,
+  deliveryConfirmedTemplate,
   orderCreatedTemplate,
   paymentConfirmedTemplate,
 } from "./templates"
 import {
   AwbCreatedPayload,
+  DeliveryConfirmedPayload,
   OrderCreatedPayload,
   PaymentConfirmedPayload,
 } from "./types"
@@ -14,7 +16,7 @@ import {
 export class GmailNotificationService {
   static readonly identifier = "np_gmail"
 
-  private ensureRecipient(to?: string) {
+  private ensureRecipient(to?: string): to is string {
     if (!to) {
       logger.warn("Notification email skipped: recipient missing")
       return false
@@ -52,6 +54,19 @@ export class GmailNotificationService {
 
     const template = awbCreatedTemplate(payload)
     logger.info("sendAwbCreated", { to, order_id: payload.order_id })
+    await sendEmail({ to, subject: template.subject, html: template.html })
+  }
+
+  async sendDeliveryConfirmed(
+    to: string | undefined,
+    payload: DeliveryConfirmedPayload
+  ) {
+    if (!this.ensureRecipient(to)) {
+      return
+    }
+
+    const template = deliveryConfirmedTemplate(payload)
+    logger.info("sendDeliveryConfirmed", { to, order_id: payload.order_id })
     await sendEmail({ to, subject: template.subject, html: template.html })
   }
 }
