@@ -23,7 +23,7 @@ type ResendOptions = {
 }
 
 enum Templates {
-    ORDER_PLACED = "order_placed",
+    ORDER_PLACED = "order-placed",
 }
 
 class ResendNotificationProviderService extends AbstractNotificationProviderService {

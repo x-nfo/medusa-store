@@ -20,7 +20,7 @@ module.exports = defineConfig({
         providers: [
           {
             resolve: "./src/modules/payment-midtrans",
-            id: "pp_midtrans",
+            id: "midtrans",
             options: {
               isProduction: process.env.MIDTRANS_IS_PRODUCTION === 'true',
               serverKey: process.env.MIDTRANS_SERVER_KEY,
