@@ -252,61 +252,83 @@ export class RajaOngkirClient {
     return { latest_status: "IN_TRANSIT", history: [] }
   }
 
+  async getProvinces(): Promise<any[]> {
+    const isKomerce = this.isKomerceTariffApi(this.baseUrl)
+    const path = isKomerce ? "destination/province" : "province"
+
+    // Normalization handles { data: ... } or { rajaongkir: ... }
+    const response: any = await this.request(
+      path,
+      { method: "GET" },
+      "getProvinces"
+    )
+    return this.normalizeLocationResponse(response)
+  }
+
+  async getCities(provinceId?: string): Promise<any[]> {
+    const isKomerce = this.isKomerceTariffApi(this.baseUrl)
+    const pathPrefix = isKomerce ? "destination/city" : "city"
+    const query = provinceId ? `?province=${provinceId}` : ""
+
+    const response: any = await this.request(
+      `${pathPrefix}${query}`,
+      { method: "GET" },
+      "getCities"
+    )
+    return this.normalizeLocationResponse(response)
+  }
+
+  // normalizeLocationResponse handles both Komerce {data: [...]} and RajaOngkir {rajaongkir: {results: [...]}}
+  private normalizeLocationResponse(response: any): any[] {
+    const root = response?.data ?? response?.rajaongkir?.results ?? response?.rajaongkir ?? response
+    // If Komerce returns { data: [...] }, root is array. If RajaOngkir, root is array.
+    if (Array.isArray(root)) return root
+    return root?.results ?? []
+  }
+
   /**
-   * Search for cities/destinations from RajaOngkir API
-   * Uses the domestic-destination endpoint
-   * @param search - Search term (city name, district, etc)
-   * @param limit - Max results to return
-   */
+ * Search for cities/destinations from RajaOngkir API
+ * Uses the domestic-destination endpoint for Komerce, or city?id=... for Starter (no search endpoint on Starter usually)
+ * @param search - Search term
+ */
   async searchCities(
     search?: string,
     limit: number = 20
   ): Promise<Array<{ id: string; name: string; province: string; type: string }>> {
     try {
       const searchTerm = search?.trim() || ""
+      const isKomerce = this.isKomerceTariffApi(this.baseUrl)
 
-      // Build URL with query params
-      const url = new URL("api/v1/destination/domestic-destination", this.baseUrl)
-      if (searchTerm) {
-        url.searchParams.set("search", searchTerm)
+      // Komerce has a dedicated search endpoint
+      if (isKomerce) {
+        const query = new URLSearchParams()
+        if (searchTerm) query.set("search", searchTerm)
+        query.set("limit", String(limit))
+        query.set("offset", "0")
+
+        const response: any = await this.request(
+          `destination/domestic-destination?${query.toString()}`,
+          { method: "GET" },
+          "searchCities"
+        )
+        // Normalize Komerce response
+        const data = response?.data ?? []
+        return data.map((item: any) => ({
+          id: String(item.id || item.city_id || item.subdistrict_id),
+          name: item.label ?? `${item.city_name}, ${item.province_name}`,
+          province: item.province_name || item.province || "",
+          type: item.type ?? "city"
+        }))
       }
-      url.searchParams.set("limit", String(limit))
-      url.searchParams.set("offset", "0")
 
-      const response = await fetch(url.toString(), {
-        method: "GET",
-        headers: {
-          key: this.apiKey,
-          "Content-Type": "application/json",
-        },
-      })
+      // Fallback for Starter/Pro: they don't have a direct "search" endpoint for cities easily accessible 
+      // without loading all cities. 
+      // We can't really "search" efficiently on Starter without caching. 
+      // check if we can filter getCities results?
+      return []
 
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`)
-      }
-
-      const json = await response.json()
-
-      // Normalize response - structure may vary
-      const data = json?.data || json?.rajaongkir?.results || json?.results || []
-
-      return data.map((item: any) => ({
-        id: String(item.id || item.city_id || item.subdistrict_id),
-        name: this.formatCityName(item),
-        province: item.province || item.province_name || "",
-        type: item.type || "city",
-      }))
     } catch (error: any) {
       logger.warn("RajaOngkir searchCities failed", { error: error.message, search })
-
-      // Return fallback mock data for testing
-      if (search) {
-        return [
-          { id: "31555", name: "Jakarta Selatan, DKI Jakarta", province: "DKI Jakarta", type: "city" },
-          { id: "22", name: "Jakarta Barat, DKI Jakarta", province: "DKI Jakarta", type: "city" },
-          { id: "153", name: "Jakarta Pusat, DKI Jakarta", province: "DKI Jakarta", type: "city" },
-        ].filter(c => c.name.toLowerCase().includes(search.toLowerCase()))
-      }
       return []
     }
   }
@@ -368,7 +390,7 @@ export class RajaOngkirClient {
   }
 
   private isKomerceTariffApi(baseUrl: string) {
-    return baseUrl.includes("collaborator.komerce.id/tariff/api/v1")
+    return baseUrl.includes("collaborator.komerce.id/tariff/api/v1") || baseUrl.includes("rajaongkir.komerce.id/api/v1")
   }
 
   private buildQuery(params: Record<string, string>) {

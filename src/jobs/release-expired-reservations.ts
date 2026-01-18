@@ -21,7 +21,7 @@ export default async function releaseExpiredReservations(
     const [reservations, count] =
       await inventoryService.listAndCountReservationItems(
         {
-          description: { contains: RESERVATION_DESCRIPTION_PREFIX },
+          // description filter removed to avoid operator error, filtering in memory below
         },
         {
           take: DEFAULT_PAGE_SIZE,
@@ -34,6 +34,11 @@ export default async function releaseExpiredReservations(
 
     const expiredIds = reservations
       .filter((reservation) => {
+        // Filter by description prefix in memory
+        if (reservation.description && !reservation.description.startsWith(RESERVATION_DESCRIPTION_PREFIX)) {
+          return false
+        }
+
         const metadata = reservation.metadata ?? {}
         const status = metadata.status as string | undefined
         if (status === RESERVATION_STATUS_CONFIRMED) {
