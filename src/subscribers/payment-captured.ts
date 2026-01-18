@@ -1,26 +1,15 @@
 import { SubscriberArgs, SubscriberConfig } from "@medusajs/framework"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
-import { GmailNotificationService } from "../modules/notification-gmail"
 
 type PaymentCapturedEvent = {
   id: string
 }
-
-const getCustomerName = (order: any) =>
-  order?.shipping_address?.first_name ||
-  order?.billing_address?.first_name ||
-  order?.customer?.first_name ||
-  undefined
-
-const formatOrderRef = (order: any) =>
-  order?.display_id ? `#${order.display_id}` : order?.id
 
 export default async function paymentCapturedHandler({
   event: { data },
   container,
 }: SubscriberArgs<PaymentCapturedEvent>) {
   const logger = container.resolve(ContainerRegistrationKeys.LOGGER)
-  const gmailNotificationService = new GmailNotificationService()
   const inventoryService = container.resolve(Modules.INVENTORY)
   const query = container.resolve(ContainerRegistrationKeys.QUERY)
 
@@ -33,14 +22,7 @@ export default async function paymentCapturedHandler({
         "id",
         "payment_collection_id",
         "payment_collection.order.id",
-        "payment_collection.order.display_id",
-        "payment_collection.order.email",
-        "payment_collection.order.total",
-        "payment_collection.order.currency_code",
         "payment_collection.order.items.id",
-        "payment_collection.order.shipping_address.first_name",
-        "payment_collection.order.billing_address.first_name",
-        "payment_collection.order.customer.first_name",
       ],
       filters: { id: data.id },
     })
@@ -49,29 +31,10 @@ export default async function paymentCapturedHandler({
     order = payment?.payment_collection?.order
 
     if (!order?.id) {
-      logger.warn(`Payment captured skipped: missing order for payment ${data.id}`)
-      return
-    }
-
-    if (!order?.email) {
-      logger.warn(
-        `Payment captured email skipped: missing email for order ${order.id}`
-      )
-    } else {
-      const orderRef = formatOrderRef(order)
-      const customerName = getCustomerName(order)
-
-      logger.info(
-        `Payment captured email queued for ${order.email} (order ${orderRef})`
-      )
-
-      await gmailNotificationService.sendPaymentConfirmed(order.email, {
-        order_id: orderRef,
-        customer_name: customerName,
-      })
+      logger.debug(`Payment captured: order not found for payment ${data.id}`)
     }
   } catch (error) {
-    logger.error("Failed to process payment captured notification", error)
+    logger.error("Failed to fetch payment order details", error)
     return
   }
 

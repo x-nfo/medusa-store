@@ -59,19 +59,17 @@ module.exports = defineConfig({
       options: {
         providers: [
           {
-            resolve: "./src/modules/notification-gmail",
-            id: "np_gmail",
+            resolve: "./src/modules/resend",
+            id: "resend",
             options: {
               channels: ["email"],
-              host: process.env.EMAIL_HOST,
-              port: process.env.GMAIL_PORT ? parseInt(process.env.GMAIL_PORT) : 587,
-              user: process.env.GMAIL_USER,
-              pass: process.env.GMAIL_APP_PASSWORD,
-              from: process.env.EMAIL_FROM_ADDRESS
-            }
-          }
-        ]
-      }
-    }
+              api_key: process.env.RESEND_API_KEY,
+              from: process.env.RESEND_FROM_EMAIL,
+            },
+          },
+        ],
+      },
+    },
+
   ]
 })
