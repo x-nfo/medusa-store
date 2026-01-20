@@ -7,6 +7,8 @@ type ShippingQuoteRequest = {
   origin_city_id?: string
   destination?: string
   destination_city_id?: string
+  destination_district_id?: string // Added for V2 support
+  destination_subdistrict_id?: string // Added for V2 support (Kelurahan)
   weight?: number
   weight_grams?: number
   courier?: string
@@ -19,6 +21,8 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     origin_city_id,
     destination,
     destination_city_id,
+    destination_district_id,
+    destination_subdistrict_id,
     weight,
     weight_grams,
     courier,
@@ -45,6 +49,9 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     )
   }
 
+  // Default couriers if none provided
+  const defaultCouriers = ["jne", "pos", "tiki", "sicepat", "jnt", "anteraja", "wahana", "ninja", "lion", "pahala", "sap", "jet", "indah", "dse", "slis", "first", "ncs", "star", "rex", "idestress", "sentral"]
+
   const couriersValue = couriers ?? courier
   const courierList = Array.isArray(couriersValue)
     ? couriersValue
@@ -53,16 +60,19 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
         .split(":")
         .map((value) => value.trim())
         .filter(Boolean)
-      : []
+      : defaultCouriers
 
-  if (!courierList.length) {
-    throw new MedusaError(MedusaError.Types.INVALID_DATA, "couriers is required")
-  }
+  // Validation removed to allow defaults
+  // if (!courierList.length) {
+  //   throw new MedusaError(MedusaError.Types.INVALID_DATA, "couriers is required")
+  // }
 
   const service = new RajaOngkirFulfillmentService({}, {})
   const options = await service.quoteRates({
     origin_city_id: originCityId,
     destination_city_id: destinationCityId,
+    destination_district_id: destination_district_id, // Pass to service
+    destination_subdistrict_id: destination_subdistrict_id, // Pass to service
     weight_grams: parsedWeight,
     couriers: courierList,
   })

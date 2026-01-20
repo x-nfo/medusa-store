@@ -1,36 +1,53 @@
 import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { RajaOngkirClient } from "../../../../services/rajaongkir-client"
 
-type CitySearchResponse = {
+type CityResponse = {
     cities: Array<{
         id: string
         name: string
-        province: string
-        type: string
+        province?: string
+        type?: string
     }>
 }
 
 /**
- * Search cities from RajaOngkir API
- * 
- * GET /admin/rajaongkir/cities?search=jakarta&limit=20
+ * Get Cities from RajaOngkir API
+ * GET /admin/rajaongkir/cities?province=12
+ * OR
+ * GET /admin/rajaongkir/cities?search=jakarta (for backward compatibility)
  */
 export const GET = async (
     req: MedusaRequest,
-    res: MedusaResponse<CitySearchResponse>
+    res: MedusaResponse<CityResponse>
 ) => {
-    const search = (req.query.search as string) || ""
-    const limit = parseInt(req.query.limit as string) || 20
+    const provinceId = req.query.province as string
+    const searchTerm = req.query.search as string
+    const limit = Number(req.query.limit) || 20
 
     try {
         const client = new RajaOngkirClient()
-        const cities = await client.searchCities(search, limit)
 
-        res.json({ cities })
+        // If province ID provided, use getCities
+        if (provinceId) {
+            const rawCities = await client.getCities(provinceId)
+            const cities = rawCities.map(c => ({
+                id: String(c.city_id || c.id),
+                name: c.city_name || c.name,
+                province: c.province_name || c.province || "",
+                type: "city"
+            }))
+            return res.json({ cities })
+        }
+
+        // Otherwise use search (backward compatibility)
+        if (searchTerm) {
+            const cities = await client.searchCities(searchTerm, limit)
+            return res.json({ cities })
+        }
+
+        res.json({ cities: [] })
     } catch (error: any) {
         console.error("[RajaOngkir Cities] Error:", error.message)
-
-        // Return empty array on error
         res.json({ cities: [] })
     }
 }

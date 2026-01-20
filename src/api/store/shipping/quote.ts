@@ -54,11 +54,12 @@ const shippingQuoteSchema = z.object({
     (value.couriers?.length ? value.couriers.join(":") : undefined) ??
     (value.courier_list?.length ? value.courier_list.join(":") : undefined)
   if (!courierValue || courierValue.trim() === "") {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "couriers is required",
-      path: ["couriers"],
-    })
+    // Optional: we default to list in handler
+    // ctx.addIssue({
+    //   code: z.ZodIssueCode.custom,
+    //   message: "couriers is required",
+    //   path: ["couriers"],
+    // })
   }
 })
 
@@ -77,12 +78,18 @@ export default async function handler(req: any, res: any) {
       parsed.courier ??
       (parsed.couriers?.length ? parsed.couriers.join(":") : undefined) ??
       (parsed.courier_list?.length ? parsed.courier_list.join(":") : undefined)
+
+    // Default couriers if none provided
+    // This allows dynamic expansion without frontend changes.
+    // Includes Starter (jne,pos,tiki) and Pro/Enterprise (sicepat,jnt,anteraja, etc)
+    const defaultCouriers = ["jne", "pos", "tiki", "sicepat", "jnt", "anteraja", "wahana", "ninja", "lion", "pahala", "sap", "jet", "indah", "dse", "slis", "first", "ncs", "star", "rex", "idestress", "sentral"]
+
     const courierList = courierValue
       ? courierValue
-          .split(":")
-          .map((value) => value.trim())
-          .filter(Boolean)
-      : []
+        .split(":")
+        .map((value) => value.trim())
+        .filter(Boolean)
+      : defaultCouriers
 
     const service = new RajaOngkirFulfillmentService({}, {})
     const options = await service.quoteRates({

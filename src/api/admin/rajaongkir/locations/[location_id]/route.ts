@@ -2,15 +2,27 @@ import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { Modules } from "@medusajs/framework/utils"
 
 type UpdateLocationMetadataRequest = {
+    rajaongkir_province_id?: string
+    rajaongkir_province_name?: string
     rajaongkir_city_id?: string
     rajaongkir_city_name?: string
+    rajaongkir_district_id?: string
+    rajaongkir_district_name?: string
+    rajaongkir_subdistrict_id?: string
+    rajaongkir_subdistrict_name?: string
 }
 
 type UpdateLocationMetadataResponse = {
     success: boolean
     location_id: string
+    rajaongkir_province_id?: string
+    rajaongkir_province_name?: string
     rajaongkir_city_id?: string
     rajaongkir_city_name?: string
+    rajaongkir_district_id?: string
+    rajaongkir_district_name?: string
+    rajaongkir_subdistrict_id?: string
+    rajaongkir_subdistrict_name?: string
 }
 
 /**
@@ -49,6 +61,33 @@ export const POST = async (
             newMetadata.rajaongkir_city_name = rajaongkir_city_name
         }
 
+        // V2: Save Province data
+        const { rajaongkir_province_id, rajaongkir_province_name } = req.body || {}
+        if (rajaongkir_province_id !== undefined) {
+            newMetadata.rajaongkir_province_id = rajaongkir_province_id
+        }
+        if (rajaongkir_province_name !== undefined) {
+            newMetadata.rajaongkir_province_name = rajaongkir_province_name
+        }
+
+        // V2: Save District data
+        const { rajaongkir_district_id, rajaongkir_district_name } = req.body || {}
+        if (rajaongkir_district_id !== undefined) {
+            newMetadata.rajaongkir_district_id = rajaongkir_district_id
+        }
+        if (rajaongkir_district_name !== undefined) {
+            newMetadata.rajaongkir_district_name = rajaongkir_district_name
+        }
+
+        // V2: Save Subdistrict data
+        const { rajaongkir_subdistrict_id, rajaongkir_subdistrict_name } = req.body || {}
+        if (rajaongkir_subdistrict_id !== undefined) {
+            newMetadata.rajaongkir_subdistrict_id = rajaongkir_subdistrict_id
+        }
+        if (rajaongkir_subdistrict_name !== undefined) {
+            newMetadata.rajaongkir_subdistrict_name = rajaongkir_subdistrict_name
+        }
+
         // Update the stock location using correct signature: updateStockLocations(id, input)
         const updated = await stockLocationService.updateStockLocations(
             location_id,
@@ -58,8 +97,14 @@ export const POST = async (
         res.json({
             success: true,
             location_id,
+            rajaongkir_province_id: (updated?.metadata as any)?.rajaongkir_province_id,
+            rajaongkir_province_name: (updated?.metadata as any)?.rajaongkir_province_name,
             rajaongkir_city_id: (updated?.metadata as any)?.rajaongkir_city_id,
             rajaongkir_city_name: (updated?.metadata as any)?.rajaongkir_city_name,
+            rajaongkir_district_id: (updated?.metadata as any)?.rajaongkir_district_id,
+            rajaongkir_district_name: (updated?.metadata as any)?.rajaongkir_district_name,
+            rajaongkir_subdistrict_id: (updated?.metadata as any)?.rajaongkir_subdistrict_id,
+            rajaongkir_subdistrict_name: (updated?.metadata as any)?.rajaongkir_subdistrict_name,
         })
     } catch (error: any) {
         console.error("[RajaOngkir Location Update] Error:", error.message)
@@ -91,8 +136,14 @@ export const GET = async (
         res.json({
             success: true,
             location_id,
+            rajaongkir_province_id: metadata.rajaongkir_province_id || null,
+            rajaongkir_province_name: metadata.rajaongkir_province_name || null,
             rajaongkir_city_id: metadata.rajaongkir_city_id || null,
             rajaongkir_city_name: metadata.rajaongkir_city_name || null,
+            rajaongkir_district_id: metadata.rajaongkir_district_id || null,
+            rajaongkir_district_name: metadata.rajaongkir_district_name || null,
+            rajaongkir_subdistrict_id: metadata.rajaongkir_subdistrict_id || null,
+            rajaongkir_subdistrict_name: metadata.rajaongkir_subdistrict_name || null,
         })
     } catch (error: any) {
         console.error("[RajaOngkir Location Get] Error:", error.message)

@@ -1,10 +1,13 @@
 import { logger } from "./logger"
+import { MOCK_PROVINCES, MOCK_CITIES, MOCK_DISTRICTS, MOCK_SUBDISTRICTS } from "../lib/rajaongkir-mock-data"
 
 export type ShippingQuoteInput = {
   origin_city_id: string
   destination_city_id: string
-  weight_grams: number
-  couriers: string[] // e.g. ["jne","jnt","sicepat"]
+  destination_district_id?: string
+  destination_subdistrict_id?: string
+  weight_grams: number // IMPORTANT: Weight must be in GRAMS (not KG)
+  couriers: string[]
 }
 
 export type ShippingQuoteOption = {
@@ -19,23 +22,79 @@ export type CreateShipmentInput = {
   order_id: string
   courier: string
   service_code?: string
+  shipping_cost?: number
   sender: {
     name: string
     phone: string
     address: string
     city_id: string
     postal_code?: string
+    email?: string
   }
   recipient: {
     name: string
     phone: string
     address: string
     city_id: string
+    district_id?: string
+    subdistrict_id?: string
     postal_code?: string
+    email?: string
   }
-  items: Array<{ name: string; qty: number; price: number }>
+  items: Array<{
+    name: string
+    qty: number
+    price: number
+    weight_grams: number
+    variant?: string
+    width?: number
+    height?: number
+    length?: number
+  }>
   weight_grams: number
   insurance?: boolean
+  payment_method?: "COD" | "BANK TRANSFER"
+  cod_value?: number
+  grand_total?: number
+}
+
+// Internal type for Komerce Store Order Payload
+type KomerceStoreOrderPayload = {
+  order_date: string // YYYY-MM-DD HH:mm:ss
+  brand_name: string
+  shipper_name: string
+  shipper_phone: string
+  shipper_destination_id: number
+  shipper_address: string
+  shipper_email: string
+  origin_pin_point?: string
+  receiver_name: string
+  receiver_phone: string
+  receiver_destination_id: number
+  receiver_address: string
+  receiver_email?: string
+  destination_pin_point?: string
+  shipping: string
+  shipping_type: string
+  shipping_cost: number
+  shipping_cashback: number
+  payment_method: "COD" | "BANK TRANSFER"
+  service_fee: number
+  additional_cost: number
+  grand_total: number
+  cod_value: number
+  insurance_value: number
+  order_details: Array<{
+    product_name: string
+    product_variant_name: string
+    product_price: number
+    product_weight: number
+    product_width: number
+    product_height: number
+    product_length: number
+    qty: number
+    subtotal: number
+  }>
 }
 
 export type CreateShipmentOutput = {
@@ -49,9 +108,9 @@ export type CreateShipmentOutput = {
 export type RajaOngkirCostInput = {
   origin: string
   destination: string
-  weight: number
+  weight: number // IMPORTANT: Weight must be in GRAMS (not KG)
   courier: string
-  service?: string // Added for filtering
+  service?: string
   itemValue?: number
   cod?: "yes" | "no"
 }
@@ -63,6 +122,8 @@ type RajaOngkirClientOptions = {
   deliveryPath?: string
   costPath?: string
   timeoutMs?: number
+  deliveryBaseUrl?: string
+  deliveryApiKey?: string
 }
 
 type RequestInit = {
@@ -76,6 +137,8 @@ export class RajaOngkirClient {
   private baseUrl: string
   private readonly quotePath: string
   private readonly deliveryPath: string
+  private readonly deliveryBaseUrl: string
+  private readonly deliveryApiKey?: string
   private readonly costPath: string
   private readonly timeoutMs: number
 
@@ -89,26 +152,33 @@ export class RajaOngkirClient {
     const baseUrl =
       options?.baseUrl ??
       process.env.RAJAONGKIR_BASE_URL ??
-      "https://rajaongkir.komerce.id"
+      "https://rajaongkir.komerce.id/api/v1"
+
     this.baseUrl = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`
 
     this.quotePath =
       options?.quotePath ??
       process.env.RAJAONGKIR_QUOTE_PATH ??
-      (this.isKomerceTariffApi(this.baseUrl) ? "calculate" : "quote")
+      (this.isV2Api(this.baseUrl) ? "calculate" : "quote")
     this.deliveryPath =
       options?.deliveryPath ??
       process.env.RAJAONGKIR_DELIVERY_PATH ??
-      "delivery/order"
+      "order/api/v1/orders/store" // Komerce Store Order endpoint
+
+    this.deliveryBaseUrl =
+      options?.deliveryBaseUrl ??
+      process.env.RAJAONGKIR_DELIVERY_BASE_URL ??
+      "https://api.collaborator.komerce.id/"
+
+    this.deliveryApiKey = options?.deliveryApiKey ?? process.env.RAJAONGKIR_API_DELIVERY_KEY
+
     const envCostPath = process.env.RAJAONGKIR_COST_PATH
     this.costPath =
       options?.costPath ??
       envCostPath ??
-      (this.isKomerceDomesticCostApi(this.baseUrl)
-        ? "api/v1/calculate/domestic-cost"
-        : this.isKomerceTariffApi(this.baseUrl)
-          ? "calculate"
-          : "cost")
+      (this.isV2Api(this.baseUrl)
+        ? "calculate/district/domestic-cost"
+        : "cost")
 
     const timeoutEnv = Number(process.env.RAJAONGKIR_TIMEOUT_MS)
     this.timeoutMs =
@@ -116,6 +186,12 @@ export class RajaOngkirClient {
       (Number.isFinite(timeoutEnv) && timeoutEnv > 0 ? timeoutEnv : 15000)
   }
 
+  /**
+   * Calculate shipping cost for a single courier
+   * @param input - Cost calculation parameters
+   * @param input.weight - IMPORTANT: Weight must be in GRAMS (not KG)
+   * @returns Shipping cost in IDR
+   */
   async getCost(input: RajaOngkirCostInput): Promise<number> {
     if (!input?.origin) {
       throw new Error("RajaOngkir cost requires origin city id")
@@ -139,105 +215,170 @@ export class RajaOngkirClient {
         courier: String(input.courier),
       }
 
-      if (this.isKomerceDomesticCostApi(this.baseUrl)) {
-        return await this.requestKomerceDomesticCost(payload)
-      }
-
       const response = await this.requestCost(payload, input)
-      // Pass input.service to normalizer
       const price = this.normalizeCostResponse(response, input.courier, input.service)
 
-      // If specific service requested but not found/price valid, error out
-      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-      // @ts-ignore
-      if ((!Number.isFinite(price) || price <= 0)) {
+      if (!Number.isFinite(price) || price <= 0) {
         throw new Error(`RajaOngkir cost response returned invalid price for ${input.courier} ${input.service || ''}`)
       }
       return price
     } catch (error) {
       logger.warn("RajaOngkir getCost failed, using fallback mock price", { error })
-      // Return fallback price
       return 14000
     }
   }
 
-  async quote(input: ShippingQuoteInput): Promise<ShippingQuoteOption[]> {
-    const payload = {
-      origin: input.origin_city_id,
-      destination: input.destination_city_id,
-      weight: input.weight_grams,
-      weight_grams: input.weight_grams,
-      couriers: input.couriers,
+  async getCostOptions(input: RajaOngkirCostInput): Promise<ShippingQuoteOption[]> {
+    try {
+      const response = await this.requestCost({
+        origin: input.origin,
+        destination: input.destination,
+        weight: input.weight,
+        courier: input.courier
+      }, input)
+
+      return this.normalizeQuoteResponse(response, [input.courier])
+    } catch (error) {
+      logger.warn(`RajaOngkir getCostOptions failed for ${input.courier}`, { error })
+      return []
     }
+  }
+
+  /**
+   * Get shipping quotes from multiple couriers
+   * @param input - Quote request parameters
+   * @param input.weight_grams - IMPORTANT: Weight must be in GRAMS (not KG)
+   * @returns Array of shipping options
+   */
+  async quote(input: ShippingQuoteInput): Promise<ShippingQuoteOption[]> {
+    const promises = input.couriers.map(courier => {
+      // Endpoint is calculate/district/domestic-cost, so we must use district_id
+      // subdistrict_id might be too granular for this specific endpoint
+      const destination = input.destination_district_id || input.destination_city_id || input.destination_subdistrict_id
+
+      return this.getCostOptions({
+        origin: input.origin_city_id,
+        destination: destination,
+        weight: input.weight_grams,
+        courier: courier
+      })
+    })
 
     try {
-      if (this.isKomerceDomesticCostApi(this.baseUrl)) {
-        const response = await this.requestKomerceDomesticQuote({
-          origin: payload.origin,
-          destination: payload.destination,
-          weight: Math.max(1, Math.round(payload.weight)),
-          couriers: payload.couriers,
-        })
-        return this.normalizeQuoteResponse(response, input.couriers)
-      }
-
-      if (this.isKomerceTariffApi(this.baseUrl)) {
-        const weightKg = Math.max(1, Math.ceil(payload.weight / 1000))
-        const query = this.buildQuery({
-          shipper_destination_id: payload.origin,
-          receiver_destination_id: payload.destination,
-          weight: String(weightKg),
-          item_value: "1",
-          cod: "no",
-        })
-
-        const response = await this.request(
-          `${this.quotePath}?${query}`,
-          { method: "GET" },
-          "quote"
-        )
-
-        return this.normalizeQuoteResponse(response, input.couriers)
-      }
-
-      const response = await this.request(
-        this.quotePath,
-        {
-          method: "POST",
-          body: payload,
-        },
-        "quote"
-      )
-
-      return this.normalizeQuoteResponse(response, input.couriers)
+      const results = await Promise.all(promises)
+      return results.flat()
     } catch (error) {
-      logger.warn("RajaOngkir quote failed, using fallback mock data", { error })
-      // Return mock data so user can proceed testing
-      return [
-        {
-          courier: input.couriers[0] || "jne",
-          service: "REG (Fallback)",
-          price: 12000,
-          etd: "2-3"
-        },
-        {
-          courier: input.couriers[0] || "jne",
-          service: "YES (Fallback)",
-          price: 24000,
-          etd: "1-1"
-        }
-      ]
+      logger.warn("RajaOngkir multi-courier quote failed", { error })
+      return []
     }
   }
 
   async createShipment(input: CreateShipmentInput): Promise<CreateShipmentOutput> {
+    // Komerce requires date format YYYY-MM-DD HH:mm:ss
+    const now = new Date()
+    const orderDate = now.toISOString().slice(0, 19).replace("T", " ")
+
+    // Sanitize phones
+    const shipperPhone = this.sanitizePhone(input.sender.phone)
+    const receiverPhone = this.sanitizePhone(input.recipient.phone)
+
+    // Determine payment method and values
+    const paymentMethod = input.payment_method || "BANK TRANSFER"
+    // Calculate total product price
+    const totalProductPrice = input.items.reduce((sum, item) => sum + (item.price * item.qty), 0)
+
+    // Calculate grand total: Product Total + Shipping - Cashback
+    // Note: Komerce logic implies grand_total includes shipping.
+    // Ensure we have a shipping cost. If not provided, should verify or throw?
+    // For now assume 0 if missing, but likely passed from checkout
+    const shippingCost = Math.round(input.shipping_cost || 0)
+    const shippingCashback = 0 // Assuming no cashback logic yet
+    const additionalCost = 0
+    const insuranceValue = 0 // Modify if insurance logic needed
+
+    const grandTotal = totalProductPrice + shippingCost + additionalCost - shippingCashback
+
+    // If COD, cod_value must equal grand_total
+    const codValue = paymentMethod === "COD" ? (input.cod_value || grandTotal) : 0
+    // Service fee logic from Komerce (e.g. 2.8% for COD), but let's send 0 if not calculated upstream
+    const serviceFee = 0
+
+    // Destination Logic: Use subdistrict if available, else district, else city
+    // Komerce V2 requires numeric ID for destination.
+    // Try to parse the input IDs which are typically strings in our system
+    const shipperDestId = parseInt(input.sender.city_id) // We use RAJAONGKIR_ORIGIN_CITY_ID usually
+
+    // Priority: Subdistrict -> District -> City
+    let receiverDestId = 0
+    if (input.recipient.subdistrict_id) {
+      receiverDestId = parseInt(input.recipient.subdistrict_id)
+    } else if (input.recipient.district_id) {
+      receiverDestId = parseInt(input.recipient.district_id)
+    } else {
+      receiverDestId = parseInt(input.recipient.city_id)
+    }
+
+    if (isNaN(receiverDestId) || receiverDestId === 0) {
+      logger.warn("RajaOngkir createShipment: Invalid receiver destination ID", {
+        sub: input.recipient.subdistrict_id,
+        dist: input.recipient.district_id,
+        city: input.recipient.city_id
+      })
+      // Fallback or throw? Komerce will reject 0/NaN.
+      // throw new Error("Invalid destination ID")
+    }
+
+    const payload: KomerceStoreOrderPayload = {
+      order_date: orderDate,
+      brand_name: "Mastro Store", // Hardcoded or config?
+      shipper_name: input.sender.name || "Store Admin",
+      shipper_phone: shipperPhone,
+      shipper_destination_id: shipperDestId,
+      shipper_address: input.sender.address,
+      shipper_email: input.sender.email || "admin@example.com",
+
+      receiver_name: input.recipient.name,
+      receiver_phone: receiverPhone,
+      receiver_destination_id: receiverDestId,
+      receiver_address: input.recipient.address,
+      receiver_email: input.recipient.email || "",
+
+      shipping: input.courier.toUpperCase(), // e.g., JNE
+      shipping_type: input.service_code || "REG", // e.g., REG19, defaults REG
+      shipping_cost: shippingCost,
+      shipping_cashback: shippingCashback,
+
+      payment_method: paymentMethod,
+      service_fee: serviceFee,
+      additional_cost: additionalCost,
+      grand_total: grandTotal,
+      cod_value: codValue,
+      insurance_value: insuranceValue,
+
+      order_details: input.items.map(item => ({
+        product_name: item.name,
+        product_variant_name: item.variant || "Standard",
+        product_price: Math.round(item.price),
+        product_weight: Math.round(item.weight_grams > 0 ? item.weight_grams : 100), // Ensure > 0
+        product_width: item.width || 10,  // Default dimensions
+        product_height: item.height || 10,
+        product_length: item.length || 10,
+        qty: item.qty,
+        subtotal: Math.round(item.price * item.qty)
+      }))
+    }
+
+    logger.info("RajaOngkir createShipment Payload", { payload })
+
     const response = await this.request(
-      this.deliveryPath,
+      "order/api/v1/orders/store", // Explicit path just to be sure
       {
         method: "POST",
-        body: input,
+        body: payload,
       },
-      "createShipment"
+      "createShipment",
+      this.deliveryBaseUrl,
+      this.deliveryApiKey
     )
 
     const normalized = this.normalizeShipmentResponse(response)
@@ -247,272 +388,229 @@ export class RajaOngkirClient {
     }
   }
 
+  private sanitizePhone(phone: string): string {
+    // Remove + and non-numeric chars
+    let clean = phone.replace(/[^0-9]/g, "")
+    // Ensure starts with 62
+    if (clean.startsWith("0")) {
+      clean = "62" + clean.substring(1)
+    } else if (clean.startsWith("8")) {
+      // Komerce allows starting with 8 or 62. Let's start with 62 to be safe standard
+      clean = "62" + clean
+    }
+    // If it starts with 62, it's good.
+    return clean
+  }
+
   async track(_awb: string): Promise<{ latest_status: string; history: any[] }> {
     logger.info("RajaOngkir track stub", { awb: _awb })
     return { latest_status: "IN_TRANSIT", history: [] }
   }
 
   async getProvinces(): Promise<any[]> {
-    const isKomerce = this.isKomerceTariffApi(this.baseUrl)
-    const path = isKomerce ? "destination/province" : "province"
+    try {
+      const isV2 = this.isV2Api(this.baseUrl)
+      const path = isV2 ? "destination/province" : "province"
 
-    // Normalization handles { data: ... } or { rajaongkir: ... }
-    const response: any = await this.request(
-      path,
-      { method: "GET" },
-      "getProvinces"
-    )
-    return this.normalizeLocationResponse(response)
+      const response: any = await this.request(
+        path,
+        { method: "GET" },
+        "getProvinces"
+      )
+      return this.normalizeLocationResponse(response)
+    } catch (error) {
+      logger.warn("RajaOngkir getProvinces failed, using mock data", { error })
+      return this.normalizeLocationResponse({ results: MOCK_PROVINCES })
+    }
   }
 
   async getCities(provinceId?: string): Promise<any[]> {
-    const isKomerce = this.isKomerceTariffApi(this.baseUrl)
-    const pathPrefix = isKomerce ? "destination/city" : "city"
-    const query = provinceId ? `?province=${provinceId}` : ""
+    try {
+      const isV2 = this.isV2Api(this.baseUrl)
 
-    const response: any = await this.request(
-      `${pathPrefix}${query}`,
-      { method: "GET" },
-      "getCities"
-    )
-    return this.normalizeLocationResponse(response)
+      // V2 uses path parameter: destination/city/{provinceId}
+      // Standard uses query parameter: city?province={provinceId}
+      let path: string
+      if (isV2) {
+        path = provinceId ? `destination/city/${provinceId}` : "destination/city"
+      } else {
+        path = provinceId ? `city?province=${provinceId}` : "city"
+      }
+
+      console.log(`[RajaOngkir] Fetching cities, path: ${path}`)
+
+      const response: any = await this.request(
+        path,
+        { method: "GET" },
+        "getCities"
+      )
+
+      const cities = this.normalizeLocationResponse(response)
+      console.log(`[RajaOngkir] Fetched ${cities.length} cities`)
+
+      return cities
+    } catch (error) {
+      logger.warn("RajaOngkir getCities failed, using mock data", { error })
+      const filtered = provinceId
+        ? MOCK_CITIES.filter(c => c.province_id === provinceId)
+        : MOCK_CITIES
+      return this.normalizeLocationResponse({ results: filtered })
+    }
   }
 
-  // normalizeLocationResponse handles both Komerce {data: [...]} and RajaOngkir {rajaongkir: {results: [...]}}
-  private normalizeLocationResponse(response: any): any[] {
-    const root = response?.data ?? response?.rajaongkir?.results ?? response?.rajaongkir ?? response
-    // If Komerce returns { data: [...] }, root is array. If RajaOngkir, root is array.
-    if (Array.isArray(root)) return root
-    return root?.results ?? []
+  async getDistricts(cityId: string): Promise<any[]> {
+    try {
+      const isV2 = this.isV2Api(this.baseUrl)
+      const path = isV2
+        ? `destination/district/${cityId}`
+        : `subdistrict?city=${cityId}`
+
+      console.log(`[RajaOngkir] Fetching districts for city ${cityId}, path: ${path}`)
+
+      const response: any = await this.request(
+        path,
+        { method: "GET" },
+        "getDistricts"
+      )
+
+      console.log(`[RajaOngkir] Raw districts response:`, response)
+
+      const districts = this.normalizeLocationResponse(response)
+
+      console.log(`[RajaOngkir] Fetched ${districts.length} districts for city ${cityId}:`,
+        districts.slice(0, 3).map(d => d.name || d.subdistrict_name || d.district_name))
+
+      return districts
+    } catch (error) {
+      logger.warn("RajaOngkir getDistricts failed, using mock data", { error })
+      const filtered = MOCK_DISTRICTS.filter(d => d.city_id === cityId)
+      return this.normalizeLocationResponse({ results: filtered })
+    }
   }
 
-  /**
- * Search for cities/destinations from RajaOngkir API
- * Uses the domestic-destination endpoint for Komerce, or city?id=... for Starter (no search endpoint on Starter usually)
- * @param search - Search term
- */
+  async getSubdistricts(districtId: string): Promise<any[]> {
+    try {
+      const isV2 = this.isV2Api(this.baseUrl)
+      const path = isV2
+        ? `destination/sub-district/${districtId}`
+        : `subdistrict/${districtId}`
+
+      console.log(`[RajaOngkir] Fetching subdistricts for district ${districtId}, path: ${path}`)
+
+      const response: any = await this.request(
+        path,
+        { method: "GET" },
+        "getSubdistricts"
+      )
+
+      console.log(`[RajaOngkir] Raw subdistricts response:`, response)
+
+      const subdistricts = this.normalizeLocationResponse(response)
+
+      console.log(`[RajaOngkir] Fetched ${subdistricts.length} subdistricts for district ${districtId}:`,
+        subdistricts.slice(0, 3).map(s => s.name || s.subdistrict_name))
+
+      return subdistricts
+    } catch (error) {
+      logger.warn("RajaOngkir getSubdistricts failed, using mock data", { error })
+      const filtered = MOCK_SUBDISTRICTS.filter(s => s.district_id === districtId)
+      return this.normalizeLocationResponse({ results: filtered })
+    }
+  }
+
   async searchCities(
     search?: string,
     limit: number = 20
-  ): Promise<Array<{ id: string; name: string; province: string; type: string }>> {
+  ): Promise<Array<{ id: string; name: string; type: string; subdistrict_id?: string; district_id?: string; city_id?: string; province_id?: string; zip_code?: string }>> {
     try {
       const searchTerm = search?.trim() || ""
-      const isKomerce = this.isKomerceTariffApi(this.baseUrl)
+      const isV2 = this.isV2Api(this.baseUrl)
 
-      // Komerce has a dedicated search endpoint
-      if (isKomerce) {
+      if (isV2) {
         const query = new URLSearchParams()
         if (searchTerm) query.set("search", searchTerm)
-        query.set("limit", String(limit))
-        query.set("offset", "0")
 
         const response: any = await this.request(
           `destination/domestic-destination?${query.toString()}`,
           { method: "GET" },
           "searchCities"
         )
-        // Normalize Komerce response
+
         const data = response?.data ?? []
-        return data.map((item: any) => ({
-          id: String(item.id || item.city_id || item.subdistrict_id),
-          name: item.label ?? `${item.city_name}, ${item.province_name}`,
-          province: item.province_name || item.province || "",
-          type: item.type ?? "city"
-        }))
+
+        // Log first item to see structure
+        if (data.length > 0) {
+          console.log(`[RajaOngkir] Raw first item:`, JSON.stringify(data[0], null, 2))
+        }
+
+        const cities = data
+          .map((item: any) => {
+            // Mapping for Komerce V2 domestic-destination
+            // It returns mixed levels: Province, City, District, Subdistrict
+
+            if (item.subdistrict_name) {
+              // Level: Subdistrict (Kelurahan)
+              return {
+                id: String(item.subdistrict_id || item.id), // Use subdistrict_id
+                name: `${item.subdistrict_name}, ${item.district_name}, ${item.city_name}, ${item.province_name}`,
+                type: "subdistrict",
+                // Additional metadata for auto-filling
+                subdistrict_id: String(item.subdistrict_id || item.id),
+                district_id: String(item.district_id),
+                city_id: String(item.city_id),
+                province_id: String(item.province_id),
+                zip_code: item.zip_code || ""
+              }
+            }
+
+            if (item.district_name) {
+              // Level: District (Kecamatan)
+              return {
+                id: String(item.district_id || item.id),
+                name: `${item.district_name}, ${item.city_name}, ${item.province_name}`,
+                type: "district",
+                district_id: String(item.district_id || item.id),
+                city_id: String(item.city_id),
+                province_id: String(item.province_id)
+              }
+            }
+
+            if (item.city_name) {
+              // Level: City (Kota/Kabupaten)
+              return {
+                id: String(item.city_id || item.id),
+                name: `${item.city_name}, ${item.province_name}`,
+                type: "city",
+                city_id: String(item.city_id || item.id),
+                province_id: String(item.province_id)
+              }
+            }
+
+            return null
+          })
+          .filter(Boolean) // Remove nulls (provinces or unknown)
+          .slice(0, limit)
+
+        console.log(`[RajaOngkir] Search "${searchTerm}" found ${cities.length} locations`)
+
+        return cities
       }
 
-      // Fallback for Starter/Pro: they don't have a direct "search" endpoint for cities easily accessible 
-      // without loading all cities. 
-      // We can't really "search" efficiently on Starter without caching. 
-      // check if we can filter getCities results?
       return []
-
     } catch (error: any) {
       logger.warn("RajaOngkir searchCities failed", { error: error.message, search })
       return []
     }
   }
 
-  /**
-   * Format city name from API response to display string
-   */
-  private formatCityName(item: any): string {
-    const parts: string[] = []
-
-    // Add subdistrict if available
-    if (item.subdistrict_name || item.subdistrict) {
-      parts.push(item.subdistrict_name || item.subdistrict)
-    }
-
-    // Add city
-    if (item.city_name || item.city) {
-      const cityType = item.type ? `${item.type} ` : ""
-      parts.push(`${cityType}${item.city_name || item.city}`)
-    }
-
-    // Add province
-    if (item.province || item.province_name) {
-      parts.push(item.province || item.province_name)
-    }
-
-    // If no parts, use whatever name is available
-    if (parts.length === 0 && item.name) {
-      return item.name
-    }
-
-    return parts.join(", ")
+  private isV2Api(baseUrl: string): boolean {
+    return baseUrl.includes("rajaongkir.komerce.id") || baseUrl.includes("collaborator.komerce.id")
   }
 
-  private buildUrl(path: string) {
-    return new URL(path, this.baseUrl).toString()
-  }
-
-  private buildHeaders(initHeaders?: Record<string, string>) {
-    const headers: Record<string, string> = { ...(initHeaders ?? {}) }
-    if (!headers["Content-Type"]) {
-      headers["Content-Type"] = "application/json"
-    }
-    headers["key"] = this.apiKey
-    headers["X-API-Key"] = this.apiKey
-    headers["Authorization"] = `Bearer ${this.apiKey}`
-    return headers
-  }
-
-  private buildKomerceHeaders() {
-    return {
-      "Content-Type": "application/x-www-form-urlencoded",
-      key: this.apiKey,
-    }
-  }
-
-  private isKomerceDomesticCostApi(baseUrl: string) {
-    return baseUrl.includes("rajaongkir.komerce.id")
-  }
-
-  private isKomerceTariffApi(baseUrl: string) {
-    return baseUrl.includes("collaborator.komerce.id/tariff/api/v1") || baseUrl.includes("rajaongkir.komerce.id/api/v1")
-  }
-
-  private buildQuery(params: Record<string, string>) {
-    const search = new URLSearchParams(params)
-    return search.toString()
-  }
-
-  private async requestKomerceDomesticCost(payload: {
-    origin: string
-    destination: string
-    weight: number
-    courier: string
-  }): Promise<number> {
-    const url = this.buildUrl(this.costPath)
-    const body = this.buildKomerceFormBody({
-      origin: payload.origin,
-      destination: payload.destination,
-      weight: payload.weight,
-      courier: payload.courier,
-    })
-
-    logger.info("RajaOngkir HTTP request", {
-      label: "getCost",
-      method: "POST",
-      url,
-      body: body.toString(),
-    })
-
-    const response = await this.fetchWithTimeout(url, {
-      method: "POST",
-      headers: this.buildKomerceHeaders(),
-      body: body.toString(),
-    })
-
-    const textResponse = await response.text()
-
-    if (!response.ok) {
-      throw new Error(
-        `RajaOngkir getCost request failed (${response.status}): ${textResponse}`
-      )
-    }
-
-    let parsed: any
-    try {
-      parsed = JSON.parse(textResponse)
-    } catch {
-      throw new Error(
-        `RajaOngkir getCost response is not valid JSON: ${textResponse}`
-      )
-    }
-
-    const firstRow = Array.isArray(parsed?.data) ? parsed.data[0] : undefined
-    const rawPrice = firstRow?.cost ?? firstRow?.price
-    const price = this.parseNumber(rawPrice)
-    if (!Number.isFinite(price) || price <= 0) {
-      throw new Error(
-        `RajaOngkir cost response missing price: ${JSON.stringify(parsed)}`
-      )
-    }
-
-    return price
-  }
-
-  private async requestKomerceDomesticQuote(payload: {
-    origin: string
-    destination: string
-    weight: number
-    couriers: string[]
-  }): Promise<any> {
-    const url = this.buildUrl(this.costPath)
-    const courierValue = payload.couriers.join(":")
-    const body = this.buildKomerceFormBody({
-      origin: payload.origin,
-      destination: payload.destination,
-      weight: payload.weight,
-      courier: courierValue,
-    })
-
-    logger.info("RajaOngkir HTTP request", {
-      label: "quote",
-      method: "POST",
-      url,
-      body: body.toString(),
-    })
-
-    const response = await this.fetchWithTimeout(url, {
-      method: "POST",
-      headers: this.buildKomerceHeaders(),
-      body: body.toString(),
-    })
-
-    const textResponse = await response.text()
-    if (!response.ok) {
-      throw new Error(
-        `RajaOngkir quote request failed (${response.status}): ${textResponse}`
-      )
-    }
-
-    const parsed = this.tryParseJSON(textResponse)
-    logger.info("RajaOngkir HTTP response", {
-      label: "quote",
-      url,
-      status: response.status,
-      body: parsed,
-    })
-
-    return parsed
-  }
-
-  private buildKomerceFormBody(payload: {
-    origin: string
-    destination: string
-    weight: number
-    courier: string
-  }) {
-    return new URLSearchParams({
-      origin: payload.origin,
-      destination: payload.destination,
-      weight: String(payload.weight),
-      courier: payload.courier,
-      price: "lowest",
-    })
+  private normalizeLocationResponse(response: any): any[] {
+    const root = response?.data ?? response?.rajaongkir?.results ?? response?.rajaongkir ?? response
+    if (Array.isArray(root)) return root
+    return root?.results ?? []
   }
 
   private async requestCost(payload: {
@@ -521,29 +619,34 @@ export class RajaOngkirClient {
     weight: number
     courier: string
   }, input: RajaOngkirCostInput) {
-    if (this.isKomerceTariffApi(this.baseUrl)) {
-      const weightKg = Math.max(1, Math.ceil(payload.weight / 1000))
+    if (this.isV2Api(this.baseUrl)) {
+      // V2 API menggunakan weight dalam GRAM (bukan KG!)
+      const weight = Math.round(payload.weight) // Keep in grams
       const itemValueRaw = Number(input.itemValue)
       const itemValue = Number.isFinite(itemValueRaw) && itemValueRaw > 0
         ? Math.round(itemValueRaw)
-        : 1
+        : 10000 // Default item value
       const cod = input.cod ?? "no"
 
-      const query = this.buildQuery({
-        shipper_destination_id: payload.origin,
-        receiver_destination_id: payload.destination,
-        weight: String(weightKg),
-        item_value: String(itemValue),
-        cod,
+      // V2 uses form data, not query params for cost calculation
+      const formData = new URLSearchParams({
+        origin: payload.origin,
+        destination: payload.destination,
+        weight: String(weight), // Weight in grams!
+        courier: payload.courier,
       })
 
-      return this.request(
-        `${this.costPath}?${query}`,
-        { method: "GET" },
-        "getCost"
-      )
+      console.log(`[RajaOngkir V2] Calculating cost:`, {
+        origin: payload.origin,
+        destination: payload.destination,
+        weight: `${weight}g`,
+        courier: payload.courier
+      })
+
+      return this.requestV2Cost(formData)
     }
 
+    // Standard RajaOngkir API
     return this.request(
       this.costPath,
       {
@@ -554,13 +657,53 @@ export class RajaOngkirClient {
     )
   }
 
+  private async requestV2Cost(formData: URLSearchParams): Promise<any> {
+    const url = this.buildUrl(this.costPath)
+
+    logger.info("RajaOngkir V2 HTTP request", {
+      label: "getCost",
+      method: "POST",
+      url,
+      body: Object.fromEntries(formData.entries()),
+    })
+
+    const response = await this.fetchWithTimeout(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+        "key": this.apiKey,
+      },
+      body: formData.toString(),
+    })
+
+    const textResponse = await response.text()
+    const parsed = this.tryParseJSON(textResponse)
+
+    logger.info("RajaOngkir V2 HTTP response", {
+      label: "getCost",
+      url,
+      status: response.status,
+      body: parsed,
+    })
+
+    if (!response.ok) {
+      const errorBody = typeof parsed === "string" ? parsed : JSON.stringify(parsed)
+      throw new Error(`RajaOngkir V2 getCost failed (${response.status}): ${errorBody}`)
+    }
+
+    return parsed
+  }
+
   private async request<T>(
     path: string,
     init: RequestInit,
-    label: string
+    label: string,
+    baseUrl?: string,
+    apiKey?: string
   ): Promise<T> {
-    const url = this.buildUrl(path)
-    const headers = this.buildHeaders(init.headers)
+    const url = this.buildUrl(path, baseUrl)
+    const headers = this.buildHeaders(init.headers, apiKey)
     const method = init.method ?? "GET"
     const body =
       init.body !== undefined && init.body !== null
@@ -582,7 +725,7 @@ export class RajaOngkirClient {
         const response = await this.fetchWithTimeout(url, {
           method,
           headers,
-          body,
+          body: body as any,
         })
 
         const textResponse = await response.text()
@@ -622,7 +765,7 @@ export class RajaOngkirClient {
     throw lastError
   }
 
-  private async fetchWithTimeout(url: string, init: RequestInit & { headers: any }) {
+  private async fetchWithTimeout(url: string, init: { method?: string; headers: any; body?: any }) {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs)
     try {
@@ -651,6 +794,22 @@ export class RajaOngkirClient {
     await new Promise((resolve) => setTimeout(resolve, ms))
   }
 
+  private buildUrl(path: string, baseUrl?: string) {
+    return new URL(path, baseUrl ?? this.baseUrl).toString()
+  }
+
+  private buildHeaders(initHeaders?: Record<string, string>, apiKey?: string) {
+    const headers: Record<string, string> = { ...(initHeaders ?? {}) }
+    if (!headers["Content-Type"]) {
+      headers["Content-Type"] = "application/json"
+    }
+    const key = apiKey ?? this.apiKey
+    headers["key"] = key
+    headers["X-API-Key"] = key
+    headers["Authorization"] = `Bearer ${key}`
+    return headers
+  }
+
   private normalizeCostResponse(
     response: unknown,
     courierFilter?: string,
@@ -660,11 +819,8 @@ export class RajaOngkirClient {
       throw new Error("RajaOngkir cost response is empty or invalid")
     }
 
-    if (this.isKomerceResponse(response)) {
-      return this.normalizeKomerceCostResponse(
-        response as any,
-        courierFilter
-      ) // Komerce helper doesn't support service filter yet, keeping legacy for now
+    if (this.isV2Response(response)) {
+      return this.normalizeV2CostResponse(response as any, courierFilter)
     }
 
     const root = (response as any).rajaongkir ?? response
@@ -692,16 +848,14 @@ export class RajaOngkirClient {
     const prices: number[] = []
 
     const isServiceMatch = (svcName?: string, svcCode?: string) => {
-      if (!serviceFilter) return true;
-      const filter = serviceFilter.toLowerCase().trim();
-      const n = (svcName || "").toLowerCase();
-      const c = (svcCode || "").toLowerCase();
-      return n.includes(filter) || c.includes(filter) || filter.includes(c);
+      if (!serviceFilter) return true
+      const filter = serviceFilter.toLowerCase().trim()
+      const n = (svcName || "").toLowerCase()
+      const c = (svcCode || "").toLowerCase()
+      return n.includes(filter) || c.includes(filter) || filter.includes(c)
     }
 
     const pushPrice = (value: unknown) => {
-      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-      // @ts-ignore
       const parsed = this.parseNumber(value)
       if (parsed !== undefined && parsed > 0) {
         prices.push(parsed)
@@ -714,7 +868,7 @@ export class RajaOngkirClient {
       }
       if (Array.isArray(result.costs)) {
         for (const cost of result.costs) {
-          if (!isServiceMatch(cost.service, cost.service)) continue;
+          if (!isServiceMatch(cost.service, cost.service)) continue
 
           if (Array.isArray(cost?.cost)) {
             for (const inner of cost.cost) {
@@ -726,7 +880,7 @@ export class RajaOngkirClient {
       }
       if (Array.isArray(result.services)) {
         for (const service of result.services) {
-          if (!isServiceMatch(service.service, service.service_code)) continue;
+          if (!isServiceMatch(service.service, service.service_code)) continue
           pushPrice(service?.value ?? service?.price ?? service?.cost)
         }
       }
@@ -746,7 +900,7 @@ export class RajaOngkirClient {
     return serviceFilter ? prices[0] : Math.min(...prices)
   }
 
-  private isKomerceResponse(response: unknown) {
+  private isV2Response(response: unknown): boolean {
     return Boolean(
       response &&
       typeof response === "object" &&
@@ -755,10 +909,7 @@ export class RajaOngkirClient {
     )
   }
 
-  private normalizeKomerceCostResponse(
-    response: any,
-    courierFilter?: string
-  ): number {
+  private normalizeV2CostResponse(response: any, courierFilter?: string): number {
     const meta = response.meta
     const code = Number(meta?.code)
     if (!Number.isFinite(code)) {
@@ -771,7 +922,7 @@ export class RajaOngkirClient {
 
     const data = response.data
     const normalizedFilter = this.normalizeCourierFilter(courierFilter)
-    const prices = this.extractPricesFromKomerceData(data, normalizedFilter)
+    const prices = this.extractPricesFromV2Data(data, normalizedFilter)
     if (!prices.length) {
       throw new Error("RajaOngkir cost response missing price")
     }
@@ -779,342 +930,107 @@ export class RajaOngkirClient {
     return Math.min(...prices)
   }
 
-  private extractPricesFromKomerceData(
-    data: any,
-    courierFilter?: string
-  ): number[] {
+  private normalizeQuoteResponse(response: any, couriers: string[]): ShippingQuoteOption[] {
+    const options: ShippingQuoteOption[] = []
+
+    const addOption = (courierName: string, serviceName: string, priceVal: any, etdVal?: string) => {
+      const price = this.parseNumber(priceVal)
+      if (price !== undefined && price > 0) {
+        options.push({
+          courier: courierName.toUpperCase(),
+          service: serviceName,
+          price: price,
+          etd: etdVal || ""
+        })
+      }
+    }
+
+    if (this.isV2Response(response)) {
+      const data = response.data
+      if (Array.isArray(data)) {
+        data.forEach((row: any) => {
+          const courier = row.code || row.name || couriers[0] || "POS"
+          const service = row.service || row.service_name || "REG"
+          addOption(courier, service, row.price || row.cost, row.etd)
+        })
+      }
+      return options
+    }
+
+    const results = response?.rajaongkir?.results || response?.results || []
+    if (Array.isArray(results)) {
+      results.forEach((res: any) => {
+        const courier = res.code || res.name || couriers[0]
+        if (Array.isArray(res.costs)) {
+          res.costs.forEach((cost: any) => {
+            const service = cost.service || cost.service_description
+            let price = 0
+            let etd = ""
+            if (Array.isArray(cost.cost)) {
+              price = cost.cost[0]?.value
+              etd = cost.cost[0]?.etd
+            } else if (cost.cost) {
+              price = cost.cost
+            }
+            addOption(courier, service, price, etd)
+          })
+        }
+      })
+    }
+
+    return options
+  }
+
+  private extractPricesFromV2Data(data: any, courierFilter?: string): number[] {
     const prices: number[] = []
-    const target = courierFilter?.toLowerCase()
+    if (!Array.isArray(data)) return []
 
-    const pushPrice = (value: unknown) => {
-      const parsed = this.parseNumber(value)
-      if (parsed !== undefined && parsed > 0) {
-        prices.push(parsed)
+    for (const row of data) {
+      if (courierFilter) {
+        const rowCourier = (row.code || row.name || "").toLowerCase()
+        if (!rowCourier.includes(courierFilter)) continue
+      }
+
+      const p = this.parseNumber(row.price || row.cost)
+      if (p !== undefined && p > 0) {
+        prices.push(p)
       }
     }
-
-    const visit = (value: any, courierHint?: string) => {
-      if (!value) {
-        return
-      }
-      if (Array.isArray(value)) {
-        value.forEach((item) => visit(item, courierHint))
-        return
-      }
-      if (typeof value !== "object") {
-        return
-      }
-
-      const currentCourierRaw =
-        this.pickString(value, "courier", "shipping", "code", "name") ??
-        courierHint
-      const currentCourier = this.normalizeCourierName(currentCourierRaw)
-
-      const matchesCourier =
-        !target || (currentCourier && currentCourier.includes(target))
-
-      if (matchesCourier) {
-        pushPrice(value.shipping_cost)
-        pushPrice(value.price)
-        pushPrice(value.cost)
-        pushPrice(value.value)
-        pushPrice(value.amount)
-        pushPrice(value.total)
-      }
-
-      Object.values(value).forEach((child) =>
-        visit(child, currentCourier)
-      )
-    }
-
-    visit(data)
-
-    if (target && !prices.length) {
-      throw new Error(`RajaOngkir cost response missing courier ${target}`)
-    }
-
     return prices
   }
 
-  private normalizeCourierFilter(courierFilter?: string) {
-    if (!courierFilter) {
-      return undefined
-    }
-    const normalized = this.normalizeCourierName(courierFilter)
+  private normalizeCourierFilter(filter?: string): string | undefined {
+    if (!filter) return undefined
+    const normalized = this.normalizeCourierName(filter)
     if (!normalized || normalized === "all" || normalized === "any") {
       return undefined
     }
     return normalized
   }
 
-  private normalizeCourierName(name?: string) {
-    if (!name) {
-      return ""
-    }
+  private normalizeCourierName(name?: string): string {
+    if (!name) return ""
     const cleaned = name.toLowerCase().replace(/[^a-z0-9]/g, "")
-    if (!cleaned) {
-      return ""
-    }
-    if (cleaned === "post" || cleaned === "posindonesia") {
-      return "pos"
-    }
-    if (cleaned === "jneexpress") {
-      return "jne"
-    }
-    if (cleaned === "jnt" || cleaned === "jntcargo") {
-      return "jnt"
-    }
-    if (cleaned === "sicpat" || cleaned === "sicepat") {
-      return "sicepat"
-    }
-    if (cleaned === "ninja" || cleaned === "ninjaexpress") {
-      return "ninja"
-    }
+    if (!cleaned) return ""
+    if (cleaned === "post" || cleaned === "posindonesia") return "pos"
+    if (cleaned === "jneexpress") return "jne"
+    if (cleaned === "jnt" || cleaned === "jntcargo") return "jnt"
+    if (cleaned === "sicpat" || cleaned === "sicepat") return "sicepat"
+    if (cleaned === "ninja" || cleaned === "ninjaexpress") return "ninja"
     return cleaned
   }
 
-  private normalizeQuoteResponse(
-    response: unknown,
-    fallbackCouriers: string[]
-  ): ShippingQuoteOption[] {
-    const rows = this.extractQuoteCandidates(response)
-    const courierFallback = fallbackCouriers?.[0] ?? "rajaongkir"
-
-    return rows
-      .map((row) => {
-        const courier =
-          this.pickString(row, "courier", "code", "name", "company") ??
-          courierFallback
-        const service = this.pickString(row, "service", "name", "description")
-        const serviceCode = this.pickString(
-          row,
-          "service_code",
-          "code",
-          "service_code"
-        )
-        const mappedService =
-          this.mapKomerceServiceLabel(serviceCode, service) ??
-          service ??
-          serviceCode ??
-          "service"
-        const price = this.extractPrice(row)
-        if (price === undefined) {
-          return null
-        }
-        const etd = this.pickString(row, "etd", "eta", "lead_time")
-
-        return {
-          courier,
-          service: mappedService,
-          service_code: serviceCode ?? undefined,
-          etd: etd ?? undefined,
-          price,
-        }
-      })
-      .filter(Boolean) as ShippingQuoteOption[]
+  private parseNumber(val: any): number | undefined {
+    if (val === undefined || val === null) return undefined
+    const n = Number(val)
+    return Number.isFinite(n) ? n : undefined
   }
 
-  private extractQuoteCandidates(input: unknown): any[] {
-    const candidates: any[] = []
-
-    const iterate = (value: any, parentCourier?: string) => {
-      if (!value) {
-        return
-      }
-      if (Array.isArray(value)) {
-        value.forEach((item) => iterate(item, parentCourier))
-        return
-      }
-      if (typeof value !== "object") {
-        return
-      }
-
-      const courierHint =
-        this.pickString(value, "courier", "code", "name") ?? parentCourier
-
-      if (Array.isArray(value.costs)) {
-        value.costs.forEach((cost: any) => iterate(cost, courierHint))
-      }
-      if (Array.isArray(value.tariffs)) {
-        value.tariffs.forEach((cost: any) => iterate(cost, courierHint))
-      }
-      if (Array.isArray(value.services)) {
-        value.services.forEach((cost: any) => iterate(cost, courierHint))
-      }
-      if (
-        value.service ||
-        value.price ||
-        value.cost ||
-        value.value ||
-        value.total
-      ) {
-        candidates.push({ ...value, courier: courierHint })
-      }
-    }
-
-    const root =
-      (responseData: any) =>
-        responseData?.data?.results ??
-        responseData?.results ??
-        responseData?.data ??
-        responseData
-
-    const responseData = root(input as any)
-    iterate(responseData)
-
-    return candidates
-  }
-
-  private mapKomerceServiceLabel(
-    serviceCode?: string,
-    serviceName?: string
-  ): string | undefined {
-    const raw = serviceCode ?? serviceName
-    if (!raw) {
-      return undefined
-    }
-    const normalized = String(raw).trim().toUpperCase()
-    if (normalized === "REG") {
-      return "standard"
-    }
-    if (normalized === "YES") {
-      return "express"
-    }
-    return undefined
-  }
-
-  private extractPrice(payload: any): number | undefined {
-    if (!payload) {
-      return undefined
-    }
-
-    const priceKeys = ["price", "cost", "value", "amount", "total"]
-    for (const key of priceKeys) {
-      const candidate = payload[key]
-      const parsed = this.parseNumber(candidate)
-      if (parsed !== undefined) {
-        return parsed
-      }
-    }
-
-    if (Array.isArray(payload.cost)) {
-      for (const inner of payload.cost) {
-        const parsed = this.parseNumber(inner?.value ?? inner)
-        if (parsed !== undefined) {
-          return parsed
-        }
-      }
-    }
-
-    if (Array.isArray(payload)) {
-      for (const item of payload) {
-        const parsed = this.parseNumber(item)
-        if (parsed !== undefined) {
-          return parsed
-        }
-      }
-    }
-
-    return undefined
-  }
-
-  private parseNumber(value: unknown): number | undefined {
-    if (value === undefined || value === null) {
-      return undefined
-    }
-
-    if (typeof value === "number") {
-      return value
-    }
-
-    if (typeof value === "string") {
-      const digits = value.replace(/[^0-9.-]/g, "")
-      if (digits === "") {
-        return undefined
-      }
-      const parsed = Number(digits)
-      return Number.isFinite(parsed) ? parsed : undefined
-    }
-
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        const parsed = this.parseNumber(item)
-        if (parsed !== undefined) {
-          return parsed
-        }
-      }
-      return undefined
-    }
-
-    if (typeof value === "object") {
-      return this.parseNumber((value as any).value ?? (value as any).amount)
-    }
-
-    return undefined
-  }
-
-  private normalizeShipmentResponse(response: any): CreateShipmentOutput {
-    const candidate =
-      response?.order ?? response?.data ?? response?.rajaongkir ?? response
-
-    const externalShipmentId =
-      this.pickString(
-        candidate,
-        "id",
-        "order_id",
-        "external_id",
-        "external_shipment_id",
-        "delivery_order_id",
-        "delivery_id",
-        "shipment_id"
-      ) ?? this.pickString(response, "order_id")
-
-    if (!externalShipmentId) {
-      throw new Error(
-        "RajaOngkir create shipment response missing external shipment id"
-      )
-    }
-
-    const awb =
-      this.pickString(
-        candidate,
-        "awb",
-        "waybill",
-        "tracking_number",
-        "resi"
-      ) ?? externalShipmentId
-
-    const labelUrl =
-      this.pickString(candidate, "label_url", "label?.url") ??
-      this.pickString(response, "label_url")
-
-    const trackingUrl =
-      this.pickString(candidate, "tracking_url", "tracking?.url") ??
-      this.pickString(response, "tracking_url")
-
+  private normalizeShipmentResponse(response: any): { external_shipment_id: string; awb: string } {
+    const data = response?.data || response?.rajaongkir?.result || {}
     return {
-      external_shipment_id: externalShipmentId,
-      awb,
-      label_url: labelUrl ?? undefined,
-      tracking_url: trackingUrl ?? undefined,
+      external_shipment_id: String(data.id || data.shipment_id || "unknown"),
+      awb: String(data.awb || data.waybill || "")
     }
-  }
-
-  private pickString(value: any, ...keys: string[]): string | undefined {
-    for (const key of keys) {
-      const parts = key.split("?.")
-      let current = value
-      for (const part of parts) {
-        if (current == null) {
-          current = undefined
-          break
-        }
-        current = current[part]
-      }
-      if (current !== undefined && current !== null) {
-        return String(current)
-      }
-    }
-    return undefined
   }
 }

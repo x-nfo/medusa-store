@@ -70,7 +70,6 @@ modules  → services
 api      → modules / workflows
 workflows→ modules / services (read-only helpers)
 
-
 ❌ Circular dependencies are NOT allowed.
 
 📌 RULE 4 — Inventory & Flash Sale Safety
@@ -106,7 +105,10 @@ V1 includes ONLY:
 
 Midtrans Snap (create + webhook)
 
-RajaOngkir Enterprise (quote + delivery/order)
+RajaOngkir (Cost Calculation) & Komerce Collaborator (Delivery Booking)
+
+- Note: Delivery uses specific Komerce "Store Order" endpoint.
+- Sandbox: Takes prepaid payment from Dashboard Balance (requires TopUp) or supports COD booking (no deduction).
 
 Gmail SMTP notifications
 
@@ -124,7 +126,7 @@ Notification: np_gmail
 
 Files:
 
-Services: *-client.ts, *-service.ts
+Services: *-client.ts,*-service.ts
 
 Modules: service.ts, index.ts
 
