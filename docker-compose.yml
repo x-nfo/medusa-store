@@ -35,9 +35,9 @@ services:
       - R2_ENDPOINT=${R2_ENDPOINT}
     ports:
       - "9000:9000"
-    depends_on:
-      - db
-      - redis
+    # depends_on:
+    #   - db
+    #   - redis
     restart: always
 
   db:
