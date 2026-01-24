@@ -1,0 +1,62 @@
+version: '3'
+
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    environment:
+      - NODE_ENV=production
+      - JWT_SECRET=${JWT_SECRET}
+      - COOKIE_SECRET=${COOKIE_SECRET}
+      - DATABASE_URL=postgres://postgres:postgres@db:5432/medusa-docker
+      - REDIS_URL=redis://redis:6379
+      - MIDTRANS_SERVER_KEY=${MIDTRANS_SERVER_KEY}
+      - MIDTRANS_CLIENT_KEY=${MIDTRANS_CLIENT_KEY}
+      - MIDTRANS_IS_PRODUCTION=${MIDTRANS_IS_PRODUCTION}
+      - MIDTRANS_MERCHANT_ID=${MIDTRANS_MERCHANT_ID}
+      - MIDTRANS_WEBHOOK_URL=${MIDTRANS_WEBHOOK_URL}
+      - RAJAONGKIR_API_KEY=${RAJAONGKIR_API_KEY}
+      - RAJAONGKIR_API_DELIVERY_KEY=${RAJAONGKIR_API_DELIVERY_KEY}
+      - RAJAONGKIR_ORIGIN_CITY_ID=${RAJAONGKIR_ORIGIN_CITY_ID}
+      - RAJAONGKIR_BASE_URL=${RAJAONGKIR_BASE_URL}
+      - RAJAONGKIR_DELIVERY_BASE_URL=${RAJAONGKIR_DELIVERY_BASE_URL}
+      - RESEND_API_KEY=${RESEND_API_KEY}
+      - RESEND_FROM_EMAIL=${RESEND_FROM_EMAIL}
+      - STORE_CORS=${STORE_CORS}
+      - ADMIN_CORS=${ADMIN_CORS}
+      - AUTH_CORS=${AUTH_CORS}
+      - R2_ACCOUNT_ID=${R2_ACCOUNT_ID}
+      - R2_ACCESS_KEY_ID=${R2_ACCESS_KEY_ID}
+      - R2_SECRET_ACCESS_KEY=${R2_SECRET_ACCESS_KEY}
+      - R2_BUCKET_NAME=${R2_BUCKET_NAME}
+      - R2_PUBLIC_URL=${R2_PUBLIC_URL}
+      - R2_ENDPOINT=${R2_ENDPOINT}
+    ports:
+      - "9000:9000"
+    depends_on:
+      - db
+      - redis
+    restart: always
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=medusa-docker
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: always
+
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    restart: always
+
+volumes:
+  postgres_data:
