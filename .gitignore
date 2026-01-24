@@ -29,4 +29,22 @@ build
 check_final.txt
 check_output.txt
 
-doc/*
+docs/*
+
+# IDE and System
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# Temporary
+tmp/
+temp/
+coverage/
+.turbo/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
