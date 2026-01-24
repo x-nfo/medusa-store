@@ -21,6 +21,7 @@
     "update-images": "medusa exec ./src/scripts/update-product-images.ts",
     "start": "medusa start",
     "dev": "medusa develop",
+    "migrate": "medusa db:migrate",
     "test": "jest --config jest.config.ts",
     "test:unit": "jest --config jest.config.ts tests/unit",
     "test:integration": "cross-env NODE_OPTIONS=--experimental-vm-modules jest --config jest.config.ts tests/integration --runInBand --forceExit",
