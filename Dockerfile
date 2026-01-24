@@ -34,7 +34,7 @@ RUN addgroup -g 1001 -S medusa && \
     adduser -S medusa -u 1001 -G medusa
 
 # Copy built application from builder
-COPY --from=builder --chown=medusa:medusa /app/.medusa/server /app
+COPY --from=builder --chown=medusa:medusa /app/.medusa/server/ .
 COPY --from=builder --chown=medusa:medusa /app/node_modules /app/node_modules
 COPY --from=builder --chown=medusa:medusa /app/package.json /app/package.json
 
