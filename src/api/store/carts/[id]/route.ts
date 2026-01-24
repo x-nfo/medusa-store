@@ -178,11 +178,12 @@ export const GET = async (req: MedusaRequest, res: MedusaResponse) => {
 
 export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const workflowEngine = req.scope.resolve(Modules.WORKFLOW_ENGINE)
+  const body = (req.validatedBody || {}) as Record<string, any>
   await workflowEngine.run(updateCartWorkflowId, {
     input: {
-      ...req.validatedBody,
+      ...body,
       id: req.params.id,
-      additional_data: req.validatedBody.additional_data,
+      additional_data: body.additional_data,
     },
   })
 

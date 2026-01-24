@@ -23,4 +23,8 @@ build
 !.yarn/sdks
 !.yarn/versions
 
+
 .medusa
+*.log
+check_final.txt
+check_output.txt

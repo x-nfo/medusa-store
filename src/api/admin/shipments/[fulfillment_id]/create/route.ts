@@ -118,10 +118,10 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
   const receiver = {
     name: `${fulfillment.delivery_address?.first_name || ""} ${fulfillment.delivery_address?.last_name || ""
       }`.trim(),
-    phone: fulfillment.delivery_address?.phone,
-    address: fulfillment.delivery_address?.address_1,
-    city_id: destinationCityId,
-    postal_code: fulfillment.delivery_address?.postal_code,
+    phone: fulfillment.delivery_address?.phone || "",
+    address: fulfillment.delivery_address?.address_1 || "",
+    city_id: String(destinationCityId),
+    postal_code: fulfillment.delivery_address?.postal_code || "",
   }
 
   if (!receiver.name || !receiver.phone || !receiver.address) {
@@ -141,6 +141,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
       name: item.title || `Item ${idx + 1}`,
       qty: item.quantity,
       price: Number(item.unit_price || 0),
+      weight_grams: Number(item.weight || item.metadata?.weight || 100),
     })),
     weight_grams: Number(weight || 0),
   }
@@ -181,8 +182,7 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     input: {
       id: fulfillment_id,
       labels,
-      data: updatedData,
-    },
+    } as any,
   })
 
   // Emit shipment.created event for subscribers (email notifications)

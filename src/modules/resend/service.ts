@@ -1,7 +1,9 @@
+import { render } from "@react-email/render"
 import { AbstractNotificationProviderService, MedusaError } from "@medusajs/framework/utils"
 import { ProviderSendNotificationDTO, ProviderSendNotificationResultsDTO } from "@medusajs/framework/types"
 import { CreateEmailOptions, Resend } from "resend"
 import { OrderPlacedEmail } from "./emails/order-placed"
+import { DeliveryConfirmedEmail } from "./emails/delivery-confirmed"
 import { logger } from "../../services/logger"
 
 type ResendOptions = {
@@ -12,6 +14,7 @@ type ResendOptions = {
 
 enum Templates {
     ORDER_PLACED = "order-placed",
+    DELIVERY_CONFIRMED = "delivery-confirmed",
 }
 
 class ResendNotificationProviderService extends AbstractNotificationProviderService {
@@ -20,7 +23,7 @@ class ResendNotificationProviderService extends AbstractNotificationProviderServ
     private options: ResendOptions
 
     constructor(container: any, options: ResendOptions) {
-        super(container, options)
+        super()
         this.options = options
 
         if (!this.options.api_key) {
@@ -48,6 +51,8 @@ class ResendNotificationProviderService extends AbstractNotificationProviderServ
         switch (template) {
             case Templates.ORDER_PLACED:
                 return OrderPlacedEmail
+            case Templates.DELIVERY_CONFIRMED:
+                return DeliveryConfirmedEmail
             default:
                 return null
         }
@@ -61,6 +66,8 @@ class ResendNotificationProviderService extends AbstractNotificationProviderServ
         switch (template) {
             case Templates.ORDER_PLACED:
                 return "Order Confirmation"
+            case Templates.DELIVERY_CONFIRMED:
+                return "Paket Anda Telah Diterima!"
             default:
                 return "New Notification"
         }
@@ -69,18 +76,24 @@ class ResendNotificationProviderService extends AbstractNotificationProviderServ
     async send(
         notification: ProviderSendNotificationDTO
     ): Promise<ProviderSendNotificationResultsDTO> {
+        logger.info(`[Resend] send() called with template: ${notification.template}, to: ${notification.to}`)
+
         const template = this.getTemplate(notification.template as Templates)
 
         if (!template) {
-            logger.error(`Couldn't find an email template for ${notification.template}. The valid options are ${Object.values(Templates)}`)
+            logger.error(`[Resend] Couldn't find an email template for ${notification.template}. The valid options are ${Object.values(Templates)}`)
             return {}
         }
+
+        logger.info(`[Resend] Template found, preparing email...`)
 
         const commonOptions = {
             from: this.options.from,
             to: [notification.to],
             subject: this.getTemplateSubject(notification.template as Templates),
         }
+
+        logger.info(`[Resend] From: ${commonOptions.from}, Subject: ${commonOptions.subject}`)
 
         let emailOptions: CreateEmailOptions
         if (typeof template === "string") {
@@ -89,24 +102,40 @@ class ResendNotificationProviderService extends AbstractNotificationProviderServ
                 html: template,
             }
         } else {
-            emailOptions = {
-                ...commonOptions,
-                react: template(notification.data as unknown as any),
+            logger.info(`[Resend] Rendering React email template...`)
+            try {
+                const html = await render(template(notification.data as unknown as any))
+                emailOptions = {
+                    ...commonOptions,
+                    html: html,
+                }
+                logger.info(`[Resend] Template rendered successfully (${html.length} chars)`)
+            } catch (renderError: any) {
+                logger.error(`[Resend] Failed to render template: ${renderError.message}`)
+                return {}
             }
         }
 
-        const { data, error } = await this.resendClient.emails.send(emailOptions)
+        logger.info(`[Resend] Sending email via Resend API...`)
 
-        if (error || !data) {
-            if (error) {
-                logger.error(`Failed to send email: ${error.name} - ${error.message}`)
-            } else {
-                logger.error("Failed to send email: unknown error")
+        try {
+            const { data, error } = await this.resendClient.emails.send(emailOptions)
+
+            if (error || !data) {
+                if (error) {
+                    logger.error(`[Resend] API Error: ${error.name} - ${error.message}`)
+                } else {
+                    logger.error("[Resend] API returned no data and no error")
+                }
+                return {}
             }
+
+            logger.info(`[Resend] ✅ Email sent successfully! ID: ${data.id}`)
+            return { id: data.id }
+        } catch (apiError: any) {
+            logger.error(`[Resend] Exception during send: ${apiError.message}`)
             return {}
         }
-
-        return { id: data.id }
     }
 }
 

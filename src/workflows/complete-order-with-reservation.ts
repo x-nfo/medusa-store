@@ -214,6 +214,41 @@ const createReservationsStep = createStep(
 
 
 
+const createPaymentSessionsStep = createStep(
+  "create-payment-sessions",
+  async ({ cart_id }: { cart_id: string }, { container }) => {
+    const paymentModuleService = container.resolve(Modules.PAYMENT)
+    const remoteQuery = container.resolve(ContainerRegistrationKeys.REMOTE_QUERY)
+
+    const queryObject = remoteQueryObjectFromString({
+      entryPoint: "cart",
+      variables: { filters: { id: cart_id } },
+      fields: ["payment_collection.id", "currency_code", "total", "region.payment_providers.id"],
+    })
+
+    const [cart] = await remoteQuery(queryObject)
+
+    if (!cart?.payment_collection?.id) {
+      return new StepResponse(null)
+    }
+
+    const providerId = cart.region?.payment_providers?.[0]?.id
+
+    if (!providerId) {
+      return new StepResponse(null)
+    }
+
+    const session = await paymentModuleService.createPaymentSession(cart.payment_collection.id, {
+      provider_id: providerId,
+      amount: cart.total,
+      currency_code: cart.currency_code,
+      data: {}
+    })
+
+    return new StepResponse(session)
+  }
+)
+
 export const completeOrderWithReservationWorkflowId =
   "complete-order-with-reservation"
 
@@ -245,6 +280,8 @@ export const completeOrderWithReservation = createWorkflow(
       })
     })
 
+    const paymentSession = createPaymentSessionsStep({ cart_id: input.cart_id })
+
     releaseLockStep({
       key: input.cart_id,
     })
@@ -253,7 +290,7 @@ export const completeOrderWithReservation = createWorkflow(
       cart_id: input.cart_id,
       order_id: existingOrder,
       reservations: createdReservations,
-
+      payment_session: paymentSession
     })
   }
 )

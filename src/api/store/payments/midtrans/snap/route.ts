@@ -119,89 +119,31 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
             cart = await fetchCart(cart_id, req.scope)
         }
 
-        // Step 2: Check for existing midtrans session
-        const existingSessions = cart.payment_collection?.payment_sessions || []
-        let midtransSession = existingSessions.find(
-            (s: any) => s.provider_id === "pp_midtrans_midtrans" && s.data?.token
+        // ... Payment collection creation remains above ...
+
+        // Step 2: Initiate Payment with Reservation (New Workflow)
+        // This workflow handles: Locking -> Reservation -> Snap Token -> Unlock
+        const { result, errors: wfErrors } = await workflowEngine.run(
+            "initiate-midtrans-payment",
+            {
+                input: {
+                    cart_id,
+                    finish_url
+                },
+                throwOnError: false
+            }
         )
 
-        if (midtransSession?.data?.token) {
-            // Return existing token
-            logger.info("Returning existing Snap token", {
-                cart_id,
-                session_id: midtransSession.id
-            })
-
-            return res.json({
-                token: midtransSession.data.token,
-                redirect_url: midtransSession.data.redirect_url,
-                order_id: midtransSession.data.midtrans_order_id,
-                session_id: midtransSession.id,
-            })
-        }
-
-        // Step 3: Create new payment session with Midtrans provider
-        // This triggers initiatePayment() in MidtransPaymentProvider
-        const amount = Math.round(cart.total || 0)
-        const currencyCode = cart.currency_code || "idr"
-
-        logger.info("Creating payment session with Midtrans", {
-            cart_id,
-            payment_collection_id: paymentCollectionId,
-            amount,
-            currency_code: currencyCode,
-        })
-
-        // Build context for initiatePayment
-        const context = {
-            customer: {
-                first_name: cart.shipping_address?.first_name || "Customer",
-                last_name: cart.shipping_address?.last_name || "",
-                email: cart.email || "guest@example.com",
-                phone: cart.shipping_address?.phone || "",
-            },
-            extra: {
-                finish_url: finish_url || undefined,
-                cart_id: cart_id,
-                items: cart.items?.map((item: any) => ({
-                    id: item.variant_id || item.id,
-                    name: (item.title || item.variant?.title || "Product").substring(0, 50),
-                    price: Math.round(item.unit_price || 0),
-                    quantity: item.quantity || 1,
-                })),
-                shipping_total: cart.shipping_total || 0,
-            },
-        }
-
-        const session = await paymentModule.createPaymentSession(paymentCollectionId, {
-            provider_id: "pp_midtrans_midtrans",
-            amount: amount,
-            currency_code: currencyCode,
-            context: context as any, // Cast to any for custom fields (customer, extra)
-            data: {},
-        })
-
-        logger.info("Payment session created", {
-            cart_id,
-            session_id: session.id,
-        })
-
-        // Session data should contain token from initiatePayment()
-        const sessionData = session.data as any
-
-        if (!sessionData?.token) {
+        if (wfErrors.length) {
+            const err = wfErrors[0].error || wfErrors[0]
+            logger.error("Failed to initiate Midtrans payment workflow", { error: err.message })
             throw new MedusaError(
                 MedusaError.Types.UNEXPECTED_STATE,
-                "Failed to get Snap token from payment session"
+                `Payment initiation failed: ${err.message}`
             )
         }
 
-        res.json({
-            token: sessionData.token,
-            redirect_url: sessionData.redirect_url,
-            order_id: sessionData.midtrans_order_id,
-            session_id: session.id,
-        })
+        return res.json(result)
 
     } catch (error: any) {
         logger.error("Midtrans Snap initiation error", {

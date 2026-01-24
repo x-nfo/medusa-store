@@ -33,7 +33,7 @@ export default async function paymentFailedReleaseReservationHandler({
       return
     }
 
-    if (![PaymentActions.FAILED, PaymentActions.CANCELED].includes(action)) {
+    if (![PaymentActions.FAILED, PaymentActions.CANCELED].includes(action as PaymentActions)) {
       return
     }
 
@@ -77,7 +77,7 @@ export default async function paymentFailedReleaseReservationHandler({
     })
 
     const lineItemIds =
-      orders?.[0]?.items?.map((item: { id: string }) => item.id) ?? []
+      orders?.[0]?.items?.filter((item: any) => item?.id).map((item: any) => item.id) ?? []
 
     if (!lineItemIds.length) {
       return

@@ -3,6 +3,7 @@ export type MidtransOptions = {
     clientKey: string
     isProduction?: boolean
     merchantId?: string
+    enabledPayments?: string[]
 }
 
 export type MidtransTransactionDetails = {
@@ -28,6 +29,7 @@ export type MidtransSnapParams = {
     transaction_details: MidtransTransactionDetails
     customer_details?: MidtransCustomerDetails
     item_details?: MidtransItemDetail[]
+    enabled_payments?: string[]
     callbacks?: {
         finish?: string
     }

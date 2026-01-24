@@ -1,0 +1,43 @@
+# Dependencies
+node_modules
+.yarn
+
+# Build artifacts
+.medusa
+dist
+.next
+
+# Version control
+.git
+.gitignore
+
+# Environment files (use docker-compose env vars)
+.env
+.env.*
+!.env.template
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Testing
+tests
+integration-tests
+*.spec.ts
+*.test.ts
+coverage
+jest.config.*
+
+# Documentation (not needed in container)
+docs
+*.md
+!README.md
+
+# Development files
+.npmrc
+.yarnrc.yml
+check-prices.mjs
+seed-prices.mjs
+test-imports.js

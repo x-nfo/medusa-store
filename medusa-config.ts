@@ -2,7 +2,7 @@ import { loadEnv, defineConfig } from '@medusajs/framework/utils'
 
 loadEnv(process.env.NODE_ENV || 'development', process.cwd())
 
-module.exports = defineConfig({
+export default defineConfig({
   projectConfig: {
     databaseUrl: process.env.DATABASE_URL,
     http: {
@@ -14,7 +14,30 @@ module.exports = defineConfig({
     }
   },
   modules: [
+    // ===== Cloudflare R2 File Storage =====
+    // Only enabled if R2 environment variables are set
+    ...(process.env.R2_ACCESS_KEY_ID ? [{
+      resolve: "@medusajs/medusa/file",
+      options: {
+        providers: [
+          {
+            resolve: "@medusajs/file-s3",
+            id: "r2",
+            options: {
+              file_url: process.env.R2_PUBLIC_URL, // Custom domain or R2.dev URL
+              access_key_id: process.env.R2_ACCESS_KEY_ID,
+              secret_access_key: process.env.R2_SECRET_ACCESS_KEY,
+              region: "auto", // Cloudflare R2 uses 'auto'
+              bucket: process.env.R2_BUCKET_NAME,
+              endpoint: process.env.R2_ENDPOINT, // https://{account-id}.r2.cloudflarestorage.com
+              cache_control: "public, max-age=31536000",
+            },
+          },
+        ],
+      },
+    }] : []),
 
+    // ===== Fulfillment Providers =====
     {
       resolve: "@medusajs/medusa/fulfillment",
       options: {
@@ -40,10 +63,19 @@ module.exports = defineConfig({
         ]
       }
     },
+
+    // ===== Notification Providers =====
     {
       resolve: "@medusajs/medusa/notification",
       options: {
         providers: [
+          {
+            resolve: "@medusajs/notification-local",
+            id: "local-notification-provider",
+            options: {
+              channels: ["feed"],
+            },
+          },
           {
             resolve: "./src/modules/resend",
             id: "resend",
@@ -56,6 +88,8 @@ module.exports = defineConfig({
         ],
       }
     },
+
+    // ===== Payment Providers =====
     {
       resolve: "@medusajs/medusa/payment",
       options: {
@@ -67,6 +101,35 @@ module.exports = defineConfig({
               serverKey: process.env.MIDTRANS_SERVER_KEY,
               clientKey: process.env.MIDTRANS_CLIENT_KEY,
               isProduction: process.env.MIDTRANS_IS_PRODUCTION === "true",
+              enabledPayments: process.env.MIDTRANS_ENABLED_PAYMENTS
+                ? process.env.MIDTRANS_ENABLED_PAYMENTS.split(",")
+                : undefined,
+            }
+          }
+        ]
+      }
+    },
+
+    // ===== Fashion Module - Material & Color Management =====
+    {
+      resolve: "./src/modules/fashion",
+    },
+    {
+      resolve: "@medusajs/medusa/auth",
+      options: {
+        providers: [
+          {
+            resolve: "@medusajs/auth-emailpass",
+            id: "emailpass",
+            options: {
+              scopes: {
+                admin: {
+                  expiresIn: "24h",
+                },
+                customer: {
+                  expiresIn: "7d",
+                }
+              }
             }
           }
         ]

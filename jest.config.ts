@@ -7,14 +7,14 @@ const config: JestConfigWithTsJest = {
   testEnvironment: "node",
   testMatch: ["**/tests/**/*.spec.ts"],
   transform: {
-    "^.+\\.ts$": [
+    "^.+\\.[tj]sx?$": [
       "ts-jest",
       {
         tsconfig: "tsconfig.json",
       },
     ],
   },
-  moduleFileExtensions: ["ts", "js", "json"],
+  moduleFileExtensions: ["ts", "tsx", "js", "json"],
   modulePathIgnorePatterns: ["dist/", "<rootDir>/.medusa/"],
   setupFiles: ["./integration-tests/setup.js"],
 }

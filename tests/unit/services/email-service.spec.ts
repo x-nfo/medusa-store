@@ -49,25 +49,26 @@ describe("email-service sendEmail", () => {
     )
   })
 
-  test("logs and rethrows when sendMail fails", async () => {
+  test("logs but does not rethrow when sendMail fails", async () => {
     const nodemailer = require("nodemailer") as jest.Mocked<typeof import("nodemailer")>
     const sendMail = jest.fn().mockRejectedValue(new Error("SMTP failure"))
     nodemailer.createTransport.mockReturnValue({ sendMail } as any)
 
     const logger = require("../../../src/services/logger").logger
-    const errorSpy = jest.spyOn(logger, "error").mockImplementation(() => {})
+    const errorSpy = jest.spyOn(logger, "error").mockImplementation(() => { })
 
     const { sendEmail } = require("../../../src/services/email-service")
 
-    await expect(
-      sendEmail({
-        to: "customer@test.com",
-        subject: "Broken",
-        html: "<p>fail</p>",
-      })
-    ).rejects.toThrow("SMTP failure")
+    await sendEmail({
+      to: "customer@test.com",
+      subject: "Broken",
+      html: "<p>fail</p>",
+    })
 
-    expect(errorSpy).toHaveBeenCalled()
+    expect(errorSpy).toHaveBeenCalledWith(
+      "Failed to send email",
+      expect.objectContaining({ error: "SMTP failure" })
+    )
   })
 
   test("skips sending when recipient is missing", async () => {
@@ -76,12 +77,12 @@ describe("email-service sendEmail", () => {
     nodemailer.createTransport.mockReturnValue({ sendMail } as any)
 
     const logger = require("../../../src/services/logger").logger
-    const warnSpy = jest.spyOn(logger, "warn").mockImplementation(() => {})
+    const warnSpy = jest.spyOn(logger, "warn").mockImplementation(() => { })
 
     const { sendEmail } = require("../../../src/services/email-service")
 
     await sendEmail({
-      // @ts-expect-error intentionally missing recipient
+      // @ts-ignore intentionally missing recipient
       to: undefined,
       subject: "Missing",
       html: "<p>missing</p>",

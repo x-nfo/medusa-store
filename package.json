@@ -14,7 +14,11 @@
   ],
   "scripts": {
     "build": "medusa build",
+    "dev:email": "email dev --dir ./src/modules/resend/emails",
     "seed": "medusa exec ./src/scripts/seed.ts",
+    "seed:karima": "medusa exec ./src/scripts/seed-karima-products.ts",
+    "update-sales-channel": "medusa exec ./src/scripts/update-products-sales-channel.ts",
+    "update-images": "medusa exec ./src/scripts/update-product-images.ts",
     "start": "medusa start",
     "dev": "medusa develop",
     "test": "jest --config jest.config.ts",
@@ -26,9 +30,12 @@
   },
   "dependencies": {
     "@medusajs/admin-sdk": "2.12.5",
+    "@medusajs/auth-emailpass": "^2.12.5",
     "@medusajs/cli": "2.12.5",
+    "@medusajs/file-s3": "^2.12.5",
     "@medusajs/framework": "2.12.5",
     "@medusajs/medusa": "2.12.5",
+    "@react-email/render": "^2.0.3",
     "@types/nodemailer": "^7.0.5",
     "midtrans-client": "^1.4.3",
     "nodemailer": "^7.0.12",
@@ -36,6 +43,8 @@
   },
   "devDependencies": {
     "@medusajs/test-utils": "2.12.5",
+    "@react-email/components": "^1.0.5",
+    "@react-email/preview-server": "^5.2.5",
     "@swc/core": "^1.7.28",
     "@swc/jest": "^0.2.36",
     "@types/jest": "^29.5.13",
@@ -48,6 +57,8 @@
     "prop-types": "^15.8.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-email": "^5.2.5",
+    "resend": "^6.8.0",
     "supertest": "^7.2.2",
     "ts-jest": "^29.4.6",
     "ts-node": "^10.9.2",
@@ -57,5 +68,8 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "resolutions": {
+    "@aws-sdk/client-s3": "3.726.1"
   }
 }

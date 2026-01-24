@@ -223,8 +223,8 @@ export class RajaOngkirClient {
       }
       return price
     } catch (error) {
-      logger.warn("RajaOngkir getCost failed, using fallback mock price", { error })
-      return 14000
+      logger.error("RajaOngkir getCost failed", { error })
+      throw error
     }
   }
 
@@ -254,7 +254,7 @@ export class RajaOngkirClient {
     const promises = input.couriers.map(courier => {
       // Endpoint is calculate/district/domestic-cost, so we must use district_id
       // subdistrict_id might be too granular for this specific endpoint
-      const destination = input.destination_district_id || input.destination_city_id || input.destination_subdistrict_id
+      const destination = input.destination_district_id || input.destination_city_id || input.destination_subdistrict_id || ""
 
       return this.getCostOptions({
         origin: input.origin_city_id,
@@ -296,12 +296,22 @@ export class RajaOngkirClient {
     const additionalCost = 0
     const insuranceValue = 0 // Modify if insurance logic needed
 
-    const grandTotal = totalProductPrice + shippingCost + additionalCost - shippingCashback
+    // Logic: Use provided grand_total or calculate from items + shipping.
+    // For COD, Komerce STRICTLY requires grand_total == cod_value.
+    let grandTotal = input.grand_total || (totalProductPrice + shippingCost + additionalCost - shippingCashback)
+
+    if (paymentMethod === "COD" && input.cod_value) {
+      grandTotal = input.cod_value
+    }
 
     // If COD, cod_value must equal grand_total
     const codValue = paymentMethod === "COD" ? (input.cod_value || grandTotal) : 0
-    // Service fee logic from Komerce (e.g. 2.8% for COD), but let's send 0 if not calculated upstream
-    const serviceFee = 0
+
+    // Service fee logic: Komerce expects 2.8% for COD
+    let serviceFee = 0
+    if (paymentMethod === "COD") {
+      serviceFee = Math.round(grandTotal * 0.028)
+    }
 
     // Destination Logic: Use subdistrict if available, else district, else city
     // Komerce V2 requires numeric ID for destination.
@@ -402,9 +412,47 @@ export class RajaOngkirClient {
     return clean
   }
 
-  async track(_awb: string): Promise<{ latest_status: string; history: any[] }> {
-    logger.info("RajaOngkir track stub", { awb: _awb })
-    return { latest_status: "IN_TRANSIT", history: [] }
+  /**
+   * Track shipment status
+   * @param awb - Airway Bill number
+   * @param courier - Courier code (e.g. JNE, SICEPAT)
+   */
+  async track(awb: string, courier: string): Promise<{ latest_status: string; history: any[]; raw?: any }> {
+    try {
+      if (!awb || !courier) {
+        throw new Error("Tracking requires both AWB and Courier code")
+      }
+
+      const shippingCode = courier.toUpperCase()
+      const query = new URLSearchParams({
+        shipping: shippingCode,
+        airway_bill: awb
+      })
+
+      const path = `order/api/v1/orders/history-airway-bill?${query.toString()}`
+
+      const response: any = await this.request(
+        path,
+        { method: "GET" },
+        "track",
+        this.deliveryBaseUrl,
+        this.deliveryApiKey
+      )
+
+      const history = response?.data?.history ?? []
+      const summary = response?.data?.summary
+      const status = summary?.status || (history.length > 0 ? history[history.length - 1].status : "UNKNOWN")
+
+      return {
+        latest_status: status,
+        history: history,
+        raw: response
+      }
+    } catch (error) {
+      logger.warn("RajaOngkir track failed", { awb, courier, error })
+      // Return a safe fallback rather than throwing, so the job continues processing other orders
+      return { latest_status: "UNKNOWN", history: [] }
+    }
   }
 
   async getProvinces(): Promise<any[]> {
@@ -820,7 +868,7 @@ export class RajaOngkirClient {
     }
 
     if (this.isV2Response(response)) {
-      return this.normalizeV2CostResponse(response as any, courierFilter)
+      return this.normalizeV2CostResponse(response as any, courierFilter, serviceFilter)
     }
 
     const root = (response as any).rajaongkir ?? response
@@ -909,7 +957,7 @@ export class RajaOngkirClient {
     )
   }
 
-  private normalizeV2CostResponse(response: any, courierFilter?: string): number {
+  private normalizeV2CostResponse(response: any, courierFilter?: string, serviceFilter?: string): number {
     const meta = response.meta
     const code = Number(meta?.code)
     if (!Number.isFinite(code)) {
@@ -922,8 +970,11 @@ export class RajaOngkirClient {
 
     const data = response.data
     const normalizedFilter = this.normalizeCourierFilter(courierFilter)
-    const prices = this.extractPricesFromV2Data(data, normalizedFilter)
+    const prices = this.extractPricesFromV2Data(data, normalizedFilter, serviceFilter)
     if (!prices.length) {
+      if (serviceFilter) {
+        throw new Error(`RajaOngkir V2: Service '${serviceFilter}' not found for courier '${courierFilter || 'any'}'`)
+      }
       throw new Error("RajaOngkir cost response missing price")
     }
 
@@ -937,7 +988,7 @@ export class RajaOngkirClient {
       const price = this.parseNumber(priceVal)
       if (price !== undefined && price > 0) {
         options.push({
-          courier: courierName.toUpperCase(),
+          courier: courierName.toLowerCase(),
           service: serviceName,
           price: price,
           etd: etdVal || ""
@@ -981,14 +1032,26 @@ export class RajaOngkirClient {
     return options
   }
 
-  private extractPricesFromV2Data(data: any, courierFilter?: string): number[] {
+  private extractPricesFromV2Data(data: any, courierFilter?: string, serviceFilter?: string): number[] {
     const prices: number[] = []
     if (!Array.isArray(data)) return []
+
+    const isServiceMatch = (svcName?: string) => {
+      if (!serviceFilter) return true
+      const filter = serviceFilter.toLowerCase().trim()
+      const n = (svcName || "").toLowerCase()
+      return n.includes(filter) || filter.includes(n)
+    }
 
     for (const row of data) {
       if (courierFilter) {
         const rowCourier = (row.code || row.name || "").toLowerCase()
         if (!rowCourier.includes(courierFilter)) continue
+      }
+
+      if (serviceFilter) {
+        const rowService = row.service || row.service_name || row.description
+        if (!isServiceMatch(rowService)) continue
       }
 
       const p = this.parseNumber(row.price || row.cost)
@@ -1026,11 +1089,13 @@ export class RajaOngkirClient {
     return Number.isFinite(n) ? n : undefined
   }
 
-  private normalizeShipmentResponse(response: any): { external_shipment_id: string; awb: string } {
+  private normalizeShipmentResponse(response: any): CreateShipmentOutput {
     const data = response?.data || response?.rajaongkir?.result || {}
     return {
       external_shipment_id: String(data.id || data.shipment_id || "unknown"),
-      awb: String(data.awb || data.waybill || "")
+      awb: String(data.awb || data.waybill || ""),
+      label_url: data.label_url || data.label || "",
+      tracking_url: data.tracking_url || data.track_url || ""
     }
   }
 }

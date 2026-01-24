@@ -25,6 +25,7 @@ export const sendOrderConfirmationWorkflow = createWorkflow(
                 "created_at",
                 "items.*",
                 "shipping_address.*",
+                "shipping_methods.*",
             ],
             filters: {
                 id: input.id,
@@ -36,7 +37,7 @@ export const sendOrderConfirmationWorkflow = createWorkflow(
         const emailData = transformOrderToEmailDataStep(order)
 
         sendNotificationStep({
-            to: order.email,
+            to: (order.email || "") as string,
             channel: "email",
             template: "order-placed",
             data: emailData,

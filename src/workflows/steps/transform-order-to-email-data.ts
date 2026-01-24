@@ -29,8 +29,10 @@ export const transformOrderToEmailDataStep = createStep(
             customer_email: order.email,
             customer_name: order.shipping_address?.first_name || "Customer",
             shipping_address: order.shipping_address,
+            shipping_method: order.shipping_methods?.[0]?.name || "Standard Shipping",
             items: (order.items || []).map((item: any) => ({
                 title: item.product_title || item.title,
+                variant: item.variant_title !== "Default Variant" ? item.variant_title : "",
                 quantity: item.quantity,
                 unit_price: formatMoney(item.unit_price, order.currency_code),
                 total: formatMoney(item.unit_price * item.quantity, order.currency_code),

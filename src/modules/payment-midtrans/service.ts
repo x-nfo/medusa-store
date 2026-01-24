@@ -110,6 +110,7 @@ export class MidtransPaymentProvider extends AbstractPaymentProvider<MidtransOpt
                 callbacks: extra.finish_url ? {
                     finish: extra.finish_url as string,
                 } : undefined,
+                enabled_payments: this.options_.enabledPayments
             })
 
             this.logger?.info("Midtrans payment initiated", {
