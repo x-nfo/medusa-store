@@ -105,10 +105,13 @@ V1 includes ONLY:
 
 Midtrans Snap (create + webhook)
 
+- Config: `MIDTRANS_ENABLED_PAYMENTS` supported for restricting payment methods (e.g. disable CC).
+
 RajaOngkir (Cost Calculation) & Komerce Collaborator (Delivery Booking)
 
 - Note: Delivery uses specific Komerce "Store Order" endpoint.
 - Sandbox: Takes prepaid payment from Dashboard Balance (requires TopUp) or supports COD booking (no deduction).
+- Warning: To facilitate Sandbox testing without top-up, logic forces 'COD' for Midtrans/Manual payments. Remove this bypass in Production to ensure proper balance deduction.
 
 Gmail SMTP notifications
 
