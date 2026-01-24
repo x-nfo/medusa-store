@@ -35,11 +35,9 @@ export class RajaOngkirFulfillmentService extends AbstractFulfillmentProviderSer
 
   // Mapping of supported couriers and their services
   // Format: [COURIER_CODE]-[SERVICE_CODE]
-  private static readonly SERVICES = {
-    // Aggregated / Best Price Options
-    "std-best": { name: "Standard (Auto Best Price)", courier: "jne:jnt:sicepat:anteraja:pos", service: "REG:EZ:Kilat Khusus", type: "standard", isAggregated: true },
-    "exp-best": { name: "Express (Auto Best Price)", courier: "jne:sicepat:anteraja", service: "YES:BEST:ND", type: "express", isAggregated: true },
-    "cargo-best": { name: "Cargo (Auto Best Price)", courier: "jne:sicepat", service: "JTR:GOKIL", type: "heavy", isAggregated: true },
+  public static readonly SERVICES = {
+    // Services cleaned up as per user request (Auto Best Price removed)
+
 
     // JNE
     "jne-reg": { name: "JNE REG (Regular)", courier: "jne", service: "REG", type: "standard" },
@@ -186,7 +184,7 @@ export class RajaOngkirFulfillmentService extends AbstractFulfillmentProviderSer
       product?: { metadata?: { weight?: number } }
     }>
   ) {
-    return (items || []).reduce((acc, item) => {
+    const totalWeight = (items || []).reduce((acc, item) => {
       const qty = Number(item.quantity ?? 0)
       if (!Number.isFinite(qty) || qty <= 0) {
         return acc
@@ -202,11 +200,26 @@ export class RajaOngkirFulfillmentService extends AbstractFulfillmentProviderSer
       const unitWeightCandidate = [variantWeight, productWeight].find(
         (value) => Number.isFinite(value) && value > 0
       )
-      const unitWeight =
-        unitWeightCandidate ?? RajaOngkirFulfillmentService.DEFAULT_WEIGHT_GRAMS
 
-      return acc + qty * unitWeight
+      const unitWeight = unitWeightCandidate ?? RajaOngkirFulfillmentService.DEFAULT_WEIGHT_GRAMS
+
+      const itemTotal = qty * unitWeight
+
+      logger.info(`[RajaOngkir] Item Weight Calc:`, {
+        variant: (item.variant as any)?.title || "unknown",
+        qty,
+        variantWeight,
+        productWeight,
+        unitWeightUsed: unitWeight,
+        itemTotalWeight: itemTotal,
+        isDefaultUsed: !unitWeightCandidate
+      })
+
+      return acc + itemTotal
     }, 0)
+
+    logger.info(`[RajaOngkir] Total Weight: ${totalWeight} grams`)
+    return totalWeight
   }
 
   /**
@@ -221,8 +234,8 @@ export class RajaOngkirFulfillmentService extends AbstractFulfillmentProviderSer
     return this.createShipment(payload)
   }
 
-  async track(awb: string) {
-    return this.client.track(awb)
+  async track(awb: string, courier?: string) {
+    return this.client.track(awb, courier || "JNE")
   }
 
   // ---- Fulfillment Service Methods ----
@@ -350,9 +363,12 @@ export class RajaOngkirFulfillmentService extends AbstractFulfillmentProviderSer
       // Since candidates might be cross-courier, let's just loop sequentially or parallel
       const pricePromises = candidates.map(async (cand) => {
         try {
+          const hasDistrictId = metadata?.rajaongkir_district_id || metadata?.district_id
+          const destinationId = hasDistrictId ? String(hasDistrictId).trim() : cityId
+
           const p = await this.client.getCost({
             origin: this.ensureOrigin(),
-            destination: cityId,
+            destination: destinationId,
             weight,
             courier: cand.courier,
             service: cand.service,
@@ -448,11 +464,15 @@ export class RajaOngkirFulfillmentService extends AbstractFulfillmentProviderSer
       // We can just use dummy itemValue calculation
       const itemValueRaw = Number(order.total) || 1
 
+      // Use district_id if available (similar to calculatePrice)
+      const districtId = sa.metadata?.rajaongkir_district_id || sa.metadata?.district_id
+      const destinationId = districtId ? String(districtId).trim() : String(destinationCityId)
+
       const pricePromises = candidates.map(async (cand) => {
         try {
           const p = await this.client.getCost({
             origin: this.ensureOrigin(),
-            destination: String(destinationCityId),
+            destination: destinationId,
             weight: weight > 0 ? weight : 1000,
             courier: cand.courier,
             service: cand.service,
@@ -484,18 +504,20 @@ export class RajaOngkirFulfillmentService extends AbstractFulfillmentProviderSer
       const subdistrictId = sa.metadata?.rajaongkir_subdistrict_id || sa.metadata?.subdistrict_id
 
       // Log Order Payments for Debugging
-      logger.info("[RajaOngkir] Order Payments", { payments: order.payments?.map((p: any) => p.provider_id) })
+      // Log Order Payments for Debugging
+      const paymentProviders = (order.payments || []).map((p: any) => p.provider_id || "")
+      logger.info("[RajaOngkir] Order Payments Debug", { providers: paymentProviders })
 
-      // Detect COD
-      // If any payment provider string contains 'cod' or 'manual' (common for cod), treat as COD.
-      // Adjust this logic based on actual payment provider IDs used in the project.
-      const codProviders = ["cod", "manual", "system-payment"]
-      const isCod = (order.payments || []).some((p: any) =>
-        codProviders.some(cp => (p.provider_id || "").toLowerCase().includes(cp))
+      // PRODUCTION: Proper payment method determination
+      // COD = Cash on Delivery, only for actual COD orders
+      // BANK TRANSFER = For online payments (Midtrans, etc.)
+      const isCod = paymentProviders.some((id: string) =>
+        id.includes("cod") ||
+        id.includes("manual") // Manual orders may need COD if customer pays on delivery
       )
 
       const paymentMethod = isCod ? "COD" : "BANK TRANSFER"
-      logger.info("[RajaOngkir] Payment Method Detection", { isCod, paymentMethod })
+      logger.info("[RajaOngkir] Payment Method", { isCod, paymentMethod })
 
       // Get shipping cost utilized in calculation
       // Medusa shipping_total is usually in smallest unit. For IDR, usually 1 unit = 1 IDR (zero decimal) or 100 if standard.

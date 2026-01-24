@@ -18,30 +18,39 @@ describe("RajaOngkirClient", () => {
   })
 
   test("quote returns normalized shipping options", async () => {
-    const responseBody = {
-      data: {
-        results: [
-          {
-            code: "jne",
-            costs: [
-              { service: "REG", cost: [{ value: "12000", etd: "2-3" }] },
-              { service: "YES", cost: [{ value: 15000, etd: "1-2" }] },
-            ],
-          },
-          {
-            code: "pos",
-            tariffs: [{ service: "Kilat", price: 18000, eta: "2 hari" }],
-          },
-        ],
-      },
+    const jneResponse = {
+      results: [
+        {
+          code: "jne",
+          costs: [
+            { service: "REG", cost: [{ value: "12000", etd: "2-3" }] },
+            { service: "YES", cost: [{ value: 15000, etd: "1-2" }] },
+          ],
+        },
+      ],
+    }
+    const posResponse = {
+      results: [
+        {
+          code: "pos",
+          costs: [{ service: "Kilat", cost: [{ value: 18000, etd: "2 hari" }] }],
+        },
+      ],
     }
 
-    const fetchMock = jest.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: async () => JSON.stringify(responseBody),
-    })
-    // @ts-expect-error override global fetch
+    const fetchMock = jest.fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(jneResponse),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(posResponse),
+      })
+    // override global fetch
+    // @ts-ignore
     global.fetch = fetchMock
 
     const client = new RajaOngkirClient()
@@ -53,15 +62,15 @@ describe("RajaOngkirClient", () => {
     })
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.rajaongkir.test/quote",
+      "https://api.rajaongkir.test/cost",
       expect.objectContaining({
         method: "POST",
       })
     )
 
-    const requestHeaders = (fetchMock.mock.calls[0]?.[1]?.headers ?? new Headers()) as Headers
-    expect(requestHeaders.get("Authorization")).toBe("Bearer test-api-key")
-    expect(requestHeaders.get("X-API-Key")).toBe("test-api-key")
+    const requestHeaders = (fetchMock.mock.calls[0]?.[1]?.headers ?? {}) as any
+    expect(requestHeaders["Authorization"]).toBe("Bearer test-api-key")
+    expect(requestHeaders["X-API-Key"]).toBe("test-api-key")
 
     expect(options).toEqual([
       expect.objectContaining({
@@ -84,7 +93,7 @@ describe("RajaOngkirClient", () => {
 
   test("createShipment returns normalized shipment details with raw response", async () => {
     const shipmentResponse = {
-      order: {
+      data: {
         id: "ship-123",
         awb: "AWB123",
         label_url: "https://label.test/123",
@@ -97,7 +106,8 @@ describe("RajaOngkirClient", () => {
       status: 200,
       text: async () => JSON.stringify(shipmentResponse),
     })
-    // @ts-expect-error override global fetch
+    // override global fetch
+    // @ts-ignore
     global.fetch = fetchMock
 
     const client = new RajaOngkirClient()
@@ -116,7 +126,7 @@ describe("RajaOngkirClient", () => {
         address: "Jl. Melati",
         city_id: "574",
       },
-      items: [{ name: "Item", qty: 1, price: 10000 }],
+      items: [{ name: "Item", qty: 1, price: 10000, weight_grams: 1000 }],
       weight_grams: 1000,
     })
 
@@ -130,9 +140,25 @@ describe("RajaOngkirClient", () => {
   })
 
   test("track returns stubbed status and history", async () => {
-    const client = new RajaOngkirClient()
-    const result = await client.track("AWB-01")
+    const shipmentResponse = {
+      data: {
+        summary: { status: "IN_TRANSIT" },
+        history: []
+      }
+    }
 
-    expect(result).toEqual({ latest_status: "IN_TRANSIT", history: [] })
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify(shipmentResponse),
+    })
+    // override global fetch
+    // @ts-ignore
+    global.fetch = fetchMock
+
+    const client = new RajaOngkirClient()
+    const result = await client.track("AWB-01", "JNE")
+
+    expect(result).toMatchObject({ latest_status: "IN_TRANSIT", history: [] })
   })
 })

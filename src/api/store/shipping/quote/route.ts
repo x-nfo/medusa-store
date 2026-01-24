@@ -49,75 +49,95 @@ export const POST = async (req: MedusaRequest, res: MedusaResponse) => {
     )
   }
 
-  // Default couriers if none provided
-  const defaultCouriers = ["jne", "pos", "tiki", "sicepat", "jnt", "anteraja", "wahana", "ninja", "lion", "pahala", "sap", "jet", "indah", "dse", "slis", "first", "ncs", "star", "rex", "idestress", "sentral"]
-
-  const couriersValue = couriers ?? courier
-  const courierList = Array.isArray(couriersValue)
-    ? couriersValue
-    : couriersValue
-      ? String(couriersValue)
-        .split(":")
-        .map((value) => value.trim())
-        .filter(Boolean)
-      : defaultCouriers
-
-  // Validation removed to allow defaults
-  // if (!courierList.length) {
-  //   throw new MedusaError(MedusaError.Types.INVALID_DATA, "couriers is required")
-  // }
-
-  const service = new RajaOngkirFulfillmentService({}, {})
-  const options = await service.quoteRates({
-    origin_city_id: originCityId,
-    destination_city_id: destinationCityId,
-    destination_district_id: destination_district_id, // Pass to service
-    destination_subdistrict_id: destination_subdistrict_id, // Pass to service
-    weight_grams: parsedWeight,
-    couriers: courierList,
-  })
-
-  /* 
-   * Fetch the actual Medusa Shipping Option ID for RajaOngkir.
-   * The storefront needs this ID to call /carts/{id}/shipping-methods.
-   * provider_id format: fp_{identifier}_{configId}
-   */
+  // 1. Fetch Enabled Shipping Options from Medusa Admin
   const fulfillmentModule = req.scope.resolve("fulfillment")
 
-  // Try finding by specific provider ID first (format: fp_rajaongkir_rajaongkir)
-  let shippingOptions = await fulfillmentModule.listShippingOptions({
-    provider_id: "fp_rajaongkir_rajaongkir"
-  }, {
-    take: 1
+  // Fetch all options for our provider
+  // We grab a bit more to ensure we catch everything
+  const allOptions = await fulfillmentModule.listShippingOptions({}, {
+    take: 100
   })
 
-  // Fallback: search loosely if exact match fails
-  if (!shippingOptions.length) {
-    const allOptions = await fulfillmentModule.listShippingOptions({}, {
-      take: 20
+  const rajaOngkirOptions = allOptions.filter((opt: any) =>
+    opt.provider_id?.includes("rajaongkir") && !opt.is_return
+  )
+
+  // 2. Identify allowed Services and Couriers
+  const validServiceIds = new Set<string>()
+  const couriersToFetch = new Set<string>()
+
+  // Map option ID (e.g. "jne-reg") to the Option Object ID (e.g. "so_123")
+  const serviceIdToOptionIdMap = new Map<string, string>()
+  const serviceIdToOptionNameMap = new Map<string, string>()
+
+  if (rajaOngkirOptions.length > 0) {
+    // Dynamic Mode: Use only configured options
+    for (const opt of rajaOngkirOptions) {
+      const serviceId = opt.data?.id as string
+      // @ts-ignore - SERVICES is static but TS might complain about index signature
+      if (serviceId && RajaOngkirFulfillmentService.SERVICES[serviceId]) {
+        validServiceIds.add(serviceId)
+        serviceIdToOptionIdMap.set(serviceId, opt.id)
+        serviceIdToOptionNameMap.set(serviceId, opt.name)
+
+        // Add courier to fetch list
+        // @ts-ignore
+        const conf = RajaOngkirFulfillmentService.SERVICES[serviceId]
+        if (conf.courier) {
+          conf.courier.split(":").forEach((c: string) => couriersToFetch.add(c))
+        }
+      }
+    }
+  } else {
+    // Fallback if NO options configured
+  }
+
+  if (couriersToFetch.size === 0) {
+    return res.json({ options: [] })
+  }
+
+  // 3. Call Service
+  const service = new RajaOngkirFulfillmentService({}, {})
+  const rawOptions = await service.quoteRates({
+    origin_city_id: originCityId,
+    destination_city_id: destinationCityId,
+    destination_district_id: destination_district_id,
+    destination_subdistrict_id: destination_subdistrict_id,
+    weight_grams: parsedWeight,
+    couriers: Array.from(couriersToFetch),
+  })
+
+  // 4. Filter and Map Results
+  // We only return results that match an enabled Service ID
+  const filteredOptions = rawOptions.flatMap(opt => {
+    // Find matching definition
+    // We need to look up which key in SERVICES matches this courier+service
+    const matchEntry = Object.entries(RajaOngkirFulfillmentService.SERVICES).find(([key, val]) => {
+      // Check courier match (case insensitive)
+      const cMatch = val.courier.toLowerCase() === opt.courier.toLowerCase()
+      // Check service match (val.service might be "REG", opt.service might be "REG" or "CTC")
+      // Strict match for safety
+      const sMatch = val.service.toLowerCase() === opt.service.toLowerCase()
+      return cMatch && sMatch
     })
-    shippingOptions = allOptions.filter((opt: any) =>
-      opt.provider_id?.includes("rajaongkir")
-    )
-  }
 
-  const shippingOptionId = shippingOptions[0]?.id
+    if (!matchEntry) return []
 
-  if (!shippingOptionId) {
-    console.warn("WARNING: No Shipping Option found for RajaOngkir provider. Please create one in Admin.")
-    // Debug log to see what options exist if any
-    const debugOpts = await fulfillmentModule.listShippingOptions({}, { take: 5, select: ["id", "provider_id", "name"] })
-    console.warn("Available options:", JSON.stringify(debugOpts))
-  }
+    const [serviceId, config] = matchEntry
 
-  const optionsWithId = options.map(opt => ({
-    ...opt,
-    id: shippingOptionId,
-    name: `${opt.courier.toUpperCase()} - ${opt.service}`,
-    amount: opt.price
-  }))
+    // Check if this ID is enabled in Admin
+    if (!validServiceIds.has(serviceId)) return []
+
+    // It is enabled! Map it.
+    return {
+      ...opt,
+      id: serviceIdToOptionIdMap.get(serviceId), // Use the actual Shipping Option ID from DB
+      name: serviceIdToOptionNameMap.get(serviceId) || config.name, // Use Admin title if possible
+      amount: opt.price
+    }
+  })
 
   res.json({
-    options: optionsWithId,
+    options: filteredOptions,
   })
 }

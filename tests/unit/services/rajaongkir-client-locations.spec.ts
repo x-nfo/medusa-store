@@ -6,7 +6,10 @@ describe("RajaOngkirClient Locations", () => {
     const mockRequest = jest.fn()
 
     beforeEach(() => {
-        client = new RajaOngkirClient({ apiKey: "test" })
+        client = new RajaOngkirClient({
+            apiKey: "test",
+            baseUrl: "https://api.rajaongkir.com/starter/"
+        })
         // Mock the private request method
         Object.defineProperty(client, "request", {
             value: mockRequest,

@@ -31,11 +31,7 @@ export const POST = async (
       })
     }
 
-    logger.info("[RajaOngkir Webhook] Received callback", {
-      awb: payload.awb || payload.tracking_number,
-      status: payload.status,
-      order_id: payload.order_id,
-    })
+    logger.info(`[RajaOngkir Webhook] Received callback - AWB: ${payload.awb || payload.tracking_number}, Status: ${payload.status}, OrderID: ${payload.order_id}`)
 
     // Get AWB from payload
     const awb = payload.awb || payload.tracking_number
@@ -75,18 +71,14 @@ export const POST = async (
     })
 
     if (!fulfillment) {
-      logger.warn("[RajaOngkir Webhook] Fulfillment not found for AWB", { awb })
+      logger.warn(`[RajaOngkir Webhook] Fulfillment not found for AWB: ${awb}`)
       return res.status(404).json({
         received: false,
         error: `Fulfillment not found for AWB: ${awb}`,
       })
     }
 
-    logger.info("[RajaOngkir Webhook] Found fulfillment", {
-      fulfillment_id: fulfillment.id,
-      order_id: fulfillment.order?.id,
-      status: payload.status,
-    })
+    logger.info(`[RajaOngkir Webhook] Found fulfillment ${fulfillment.id} for order ${fulfillment.order?.id}, status: ${payload.status}`)
 
     // Map RajaOngkir status to Medusa fulfillment actions
     const status = payload.status?.toUpperCase()
@@ -105,9 +97,7 @@ export const POST = async (
 
     // Emit events based on status
     if (status === "DELIVERED") {
-      logger.info("[RajaOngkir Webhook] Shipment delivered, emitting event", {
-        fulfillment_id: fulfillment.id,
-      })
+      logger.info(`[RajaOngkir Webhook] Shipment delivered, emitting event for fulfillment ${fulfillment.id}`)
 
       await eventBus.emit({
         name: "delivery.created",
@@ -120,10 +110,7 @@ export const POST = async (
         },
       })
     } else if (status === "FAILED" || status === "RETURNED") {
-      logger.warn("[RajaOngkir Webhook] Shipment failed/returned", {
-        fulfillment_id: fulfillment.id,
-        status,
-      })
+      logger.warn(`[RajaOngkir Webhook] Shipment failed/returned for fulfillment ${fulfillment.id}, status: ${status}`)
 
       await eventBus.emit({
         name: "fulfillment.shipment_failed",
@@ -148,10 +135,7 @@ export const POST = async (
       })
     }
 
-    logger.info("[RajaOngkir Webhook] Processed successfully", {
-      fulfillment_id: fulfillment.id,
-      status: payload.status,
-    })
+    logger.info(`[RajaOngkir Webhook] Processed successfully for fulfillment ${fulfillment.id}, status: ${payload.status}`)
 
     return res.json({
       received: true,
@@ -159,11 +143,7 @@ export const POST = async (
     })
   } catch (err: unknown) {
     const error = err as Error
-    logger.error("[RajaOngkir Webhook] Error processing callback", {
-      message: error.message,
-      stack: error.stack,
-      awb: payload?.awb,
-    })
+    logger.error(`[RajaOngkir Webhook] Error: ${error.message}, AWB: ${payload?.awb}`)
 
     return res.status(500).json({
       received: false,
