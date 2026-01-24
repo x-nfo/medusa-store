@@ -135,6 +135,24 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
                                     // 3. Trigger Complete Cart Workflow
                                     // ... logic continues ...
                                     try {
+                                        // CRITICAL: Release "Flash Sale" Reservation first!
+                                        // Since we reserved at Snap creation, complete-cart (which tries to reserve) will fail with "OOS"
+                                        // if we don't release our hold first.
+                                        const inventoryService = req.scope.resolve(Modules.INVENTORY)
+
+                                        // Get cart line item IDs to find related reservations
+                                        // Note: metadata filtering not supported, use line_item_id filter instead
+                                        const lineItemIds = (cart as any).items?.map((i: any) => i.id) ?? []
+                                        const reservations = lineItemIds.length > 0
+                                            ? await inventoryService.listReservationItems({ line_item_id: lineItemIds })
+                                            : []
+
+                                        if (reservations.length > 0) {
+                                            const ids = reservations.map((r: any) => r.id)
+                                            await inventoryService.deleteReservationItems(ids)
+                                            logger.info(`Released ${ids.length} reservations for cart ${cart.id} to allow completion`)
+                                        }
+
                                         await workflowEngine.run("complete-cart", {
                                             input: { id: cart.id },
                                             throwOnError: true // We want to catch and log if it fails
@@ -145,16 +163,12 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
                                             error: wfError.message
                                         })
 
-                                        // --- COMPENSATION / ROLLBACK ---
-                                        try {
-                                            logger.info(`Attempting to rollback/refund payment session ${orderId} due to order creation failure`)
-                                            await paymentModule.cancelPaymentSession(orderId)
-                                            logger.info(`Successfully rolled back/refunded payment session ${orderId}`)
-                                        } catch (rollbackError: any) {
-                                            logger.error(`CRITICAL: Failed to rollback payment ${orderId} after order failure!`, {
-                                                error: rollbackError.message
-                                            })
-                                        }
+                                        // CRITICAL: Return 500 to tell Midtrans to retry later
+                                        // This prevents "silent failure" where payment is success but order missing
+                                        return res.status(500).json({
+                                            message: "Failed to create order in Medusa",
+                                            error: wfError.message
+                                        })
                                     }
                                 } else if (cart?.completed_at) {
                                     logger.info(`Cart ${cart.id} already completed, skipping completion workflow`)

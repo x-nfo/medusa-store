@@ -51,6 +51,10 @@ export class MidtransClient {
             parameter.item_details = params.item_details
         }
 
+        if (params.enabled_payments) {
+            parameter.enabled_payments = params.enabled_payments
+        }
+
         if (params.callbacks) {
             parameter.callbacks = params.callbacks
         }

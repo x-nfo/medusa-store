@@ -8,6 +8,8 @@ Integrasi Midtrans ini menggunakan pendekatan hybrid yang menggabungkan **Medusa
 
 - **Webhook Handler**: `src/api/webhooks/midtrans/route.ts`
 - **Payment Provider**: `src/modules/payment-midtrans/service.ts`
+- **Reconciliation Job**: `src/jobs/reconcile-payments.ts`
+- **Workflow**: `src/workflows/initiate-midtrans-payment.ts`
 
 ## 1. Arsitektur: Medusa Engine + Custom Driver
 
@@ -64,65 +66,35 @@ Kami mengimplementasikan blok `try-catch` cerdas di webhook handler:
     - Jika pembayaran **Settlement** (Uang sudah masuk): Sistem melakukan **Refund Otomatis**.
 3. **Logging**: Jika kompensasi otomatis gagal (sangat jarang), dicatat sebagai `CRITICAL` log untuk intervensi manual Admin.
 
-```typescript
-try {
-    // Coba buat Order
-    await workflowEngine.run("complete-cart", { input: { id: cart.id } })
-} catch (error) {
-    // JIKA GAGAL -> KEMBALIKAN UANG
-    logger.error("Order creation failed, rolling back payment...")
-    await paymentModule.cancelPaymentSession(orderId) // Memicu Refund/Cancel di Midtrans
-}
-```
+## 4. Enhanced Resilience Strategy (New Updates)
 
-Implementasi ini menjamin **Zero Data Inconsistency** dan pengalaman pengguna yang aman.
+Berikut adalah skenario kegagalan spesifik yang kini sudah ditangani secara otomatis:
 
-## 4. Troubleshooting & Pelajaran Penting (Lessons Learned)
+### A. Webhook Failure (Jaringan / Server Error)
 
-Bagian ini mendokumentasikan masalah nyata yang dihadapi selama pengembangan dan solusinya, agar tidak terulang di masa depan.
+* **Masalah**: Webhook dari Midtrans gagal sampai karena koneksi putus atau server maintenance (502).
+- **Solusi (Preventif)**: Endpoint Webhook kita kini mengembalikan **HTTP 500** jika terjadi error internal. Ini memaksa Midtrans untuk **mengirim ulang (Retry)** notifikasi secara berkala (mekanisme bawaan Midtrans).
+- **Solusi (Kuratif)**: Jika Webhook tetap gagal total, **Reconciliation Job** akan "menjemput bola" setiap 1 jam untuk mengecek status pembayaran yang menggantung dan menyelesaikannya.
 
-### Masalah: "Paid but No Order" (Bayar Sukses, Order Tidak Ada)
+### B. Orphan Payments (Bayar tapi Tidak Ada Order)
 
-**Gejala:**
+* **Masalah**: Kasus langka dimana webhook tidak terproses sama sekali.
+- **Solusi**: Job `reconcile-payments.ts` berjalan setiap jam.
+    1. Mencari sesi pembayaran `pending` > 5 menit yang lalu.
+    2. Cek status ke Midtrans API.
+    3. Jika status Midtrans `settlement`, job otomatis membuatkan Order (Replay Logic).
 
-- Transaksi di Midtrans berstatus `Success`/`Settlement`.
-- Webhook masuk dengan status `200 OK`.
-- Tapi Order tidak terbentuk di Medusa.
-- Mekanisme Refund Otomatis TIDAK berjalan.
+### C. Flash Sale Overselling (Stok Berebut)
 
-**Penyebab (Root Cause):**
-Kesalahan cara query database (Relational Query). Kode mencoba mengakses `payment_collection_id` langsung dari entity `Cart`, padahal di versi Medusa ini, link tersebut ada di entity `PaymentCollection`.
+* **Masalah**: Stok tinggal 1, tapi 100 orang klik "Pay" bersamaan. Siapa cepat dia dapat?
+- **Solusi**:
+  - **Inventory Reservation**: Saat user klik tombol "Pay" (sebelum bayar), stok langsung **dikunci** (reserved) selama 15 menit.
+  - User ke-2 dst akan mendapat error "Out of Stock" saat mencoba mengambil token pembayaran.
+  - Jika User ke-1 batal bayar, reservasi hangus otomatis setelah 15 menit.
+  - **Conflict Resolution**: Webhook dan Reconciliation Job dikonfigurasi untuk melepas reservasi sementara ini sesaat sebelum membuat Order permanen, mencegah error "Double Reservation".
 
-```typescript
-// Query yang GAGAL (Penyebab Error)
-filters: { payment_collection_id: "pay_col_123" } 
-// Error: Trying to query by not existing property Cart.payment_collection_id
-```
+## 5. Troubleshooting & Tips Integrasi
 
-Karena query ini gagal (Throw Error) **SEBELUM** masuk blok `try-catch` pembuatan order, maka:
-
-1. Pembuatan Order tidak pernah dicoba.
-2. Logika Refund tidak pernah dipicu.
-
-**Solusi (Fix):**
-Gunakan query bertahap yang mengikuti relasi data yang benar:
-
-1. Query `payment_collection` berdasarkan ID.
-2. Minta relasi `cart.id` secara eksplisit (`fields: ["cart.id"]`).
-3. Gunakan `cart.id` tersebut untuk mencari Cart.
-
-```typescript
-// Query yang BENAR
-const { data: [paymentCollection] } = await query.graph({
-    entity: "payment_collection",
-    fields: ["cart.id"], // Akses Relasi
-    filters: { id: paymentCollectionId }
-})
-const cartId = paymentCollection.cart.id // Aman
-```
-
-### Tips Keamanan Integrasi
-
-1. **Jangan berasumsi struktur data**: Selalu cek definisi entity Medusa atau gunakan `query.graph` dengan relasi eksplisit.
-2. **Log Error Query**: Bungkus logika query dalam search try-catch terpisah agar jika pencarian data gagal, kita bisa tahu persis (seperti masalah di atas) dan tidak hanya "silent fail".
-3. **Verifikasi Transaction Status**: Pastikan hanya memproses status `settlement` dan `capture` untuk pembuatan order. Status `pending` tidak boleh membuat order.
+1. **Log Error Query**: Bungkus logika query dalam search try-catch terpisah agar jika pencarian data gagal, kita bisa tahu persis dan tidak hanya "silent fail".
+2. **Verifikasi Transaction Status**: Pastikan hanya memproses status `settlement` dan `capture` untuk pembuatan order. Status `pending` tidak boleh membuat order.
+3. **Jangan Ubah Cart ID**: Midtrans butuh ID yang konsisten. Jangan membuat cart baru di tengah sesi pembayaran.
