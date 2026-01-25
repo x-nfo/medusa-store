@@ -110,10 +110,7 @@ export default defineConfig({
       }
     },
 
-    // ===== Fashion Module - Material & Color Management =====
-    {
-      resolve: "./src/modules/fashion",
-    },
+
     {
       resolve: "@medusajs/medusa/auth",
       options: {
