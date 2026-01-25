@@ -62,6 +62,15 @@ const reserveInventoryStep = createStep(
         const inventoryService = container.resolve(Modules.INVENTORY)
         const locking = container.resolve(Modules.LOCKING)
 
+        // Validation: Check for stale items (deleted variants)
+        const missingVariantItems = cart.items.filter((i: any) => !i.variant)
+        if (missingVariantItems.length > 0) {
+            throw new MedusaError(
+                MedusaError.Types.INVALID_DATA,
+                `Some items in your cart are no longer available. Please clear your cart and try again.`
+            )
+        }
+
         // Prepare items for reservation
         // Using core flow util to handle intricate details of variants/locations
         const variants = cart.items.map((i: any) => i.variant)
@@ -216,7 +225,20 @@ const initMidtransSessionStep = createStep(
         }
 
         // 3. Create Session
-        const amount = Math.round(cart.total || 0)
+        const shippingTotal = Math.round(Number(cart.shipping_total) || 0)
+
+        const items = cart.items?.map((item: any) => ({
+            id: item.variant_id || item.id,
+            name: (item.title || item.variant?.title || "Product").substring(0, 50),
+            price: Math.round(Number(item.unit_price) || 0),
+            quantity: item.quantity || 1,
+        })) || []
+
+        // Calculate total derived from items + shipping to ensure Midtrans sum consistency
+        // This avoids issues where cart.total might be stale or not include shipping yet
+        const itemsTotal = items.reduce((sum: number, item: any) => sum + (item.price * item.quantity), 0)
+        const amount = itemsTotal + shippingTotal
+
         const context = {
             customer: {
                 first_name: cart.shipping_address?.first_name || "Customer",
@@ -227,13 +249,8 @@ const initMidtransSessionStep = createStep(
             extra: {
                 finish_url,
                 cart_id: cart.id,
-                items: cart.items?.map((item: any) => ({
-                    id: item.variant_id || item.id,
-                    name: (item.title || item.variant?.title || "Product").substring(0, 50),
-                    price: Math.round(item.unit_price || 0),
-                    quantity: item.quantity || 1,
-                })),
-                shipping_total: cart.shipping_total || 0,
+                items,
+                shipping_total: shippingTotal,
             },
         }
 
